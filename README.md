@@ -1,25 +1,19 @@
-<<<<<<< HEAD
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
-</div>
-
-# Run and deploy your AI Studio app
-
-This contains everything you need to run your app locally.
-
-View your app in AI Studio: https://ai.studio/apps/drive/1DaSTqxUiJ-wtBwg6KfhhhtbUUS2CvCjy
 
 ## Run Locally
 
 **Prerequisites:**  Node.js
 
-
+======
 1. Install dependencies:
    `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
+2. Run the app:
    `npm run dev`
 =======
-# volosist_web
-Main website of volosist
->>>>>>> f23aa5c831a2a22cde54d7726b4737de4a43bd93
+
+*** If cause policy issue then run ***
+npm install --legacy-peer-deps
+powershell -ExecutionPolicy Bypass -Command "npm install --legacy-peer-deps"
+powershell -ExecutionPolicy Bypass -Command "npm run dev"
+
+• open it : Local: http://localhost:3000/
+
