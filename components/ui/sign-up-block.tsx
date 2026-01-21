@@ -1,3 +1,4 @@
+
 "use client";
 
 import { Label } from "./label";
@@ -5,9 +6,10 @@ import { Input } from "./input";
 import { Button } from "./button";
 import { Card, CardContent, CardDescription, CardHeader, CardFooter, CardTitle } from "./card";
 import { Checkbox } from "./checkbox";
-import { useState } from "react";
+import React, { useState } from "react";
 import { Mail, Lock, User, ArrowLeft } from "lucide-react";
 import { motion } from "framer-motion";
+import { supabase } from "../../lib/supabase";
 
 export function SignUpPage({ onGoToSignIn }: { onGoToSignIn: () => void }) {
   const [formData, setFormData] = useState({
@@ -20,14 +22,36 @@ export function SignUpPage({ onGoToSignIn }: { onGoToSignIn: () => void }) {
   });
   const [loading, setLoading] = useState(false);
   const [success, setSuccess] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!formData.acceptTerms) {
+      setError("You must accept the terms and conditions.");
+      return;
+    }
+    
     setLoading(true);
-    setTimeout(() => {
+    setError(null);
+
+    const { error: signUpError } = await supabase.auth.signUp({
+      email: formData.email,
+      password: formData.password,
+      options: {
+        data: {
+          first_name: formData.firstName,
+          last_name: formData.lastName,
+        },
+      },
+    });
+
+    if (signUpError) {
+      setError(signUpError.message);
       setLoading(false);
+    } else {
       setSuccess(true);
-    }, 2000);
+      setLoading(false);
+    }
   };
 
   if (success) {
@@ -37,7 +61,7 @@ export function SignUpPage({ onGoToSignIn }: { onGoToSignIn: () => void }) {
           <CardHeader>
             <CardTitle className="text-2xl text-green-600 mb-2">Success!</CardTitle>
             <CardDescription className="text-slate-500 font-medium">
-              Your Volosist workspace is ready. Check your email to verify your identity.
+              Your Volosist workspace registration is complete. Please check your email for a verification link to activate your account.
             </CardDescription>
           </CardHeader>
           <CardContent className="mt-6">
@@ -65,6 +89,12 @@ export function SignUpPage({ onGoToSignIn }: { onGoToSignIn: () => void }) {
 
           <form onSubmit={handleSubmit}>
             <CardContent className="space-y-4">
+              {error && (
+                <div className="p-4 bg-red-50 border border-red-100 rounded-xl text-red-600 text-sm font-medium">
+                  {error}
+                </div>
+              )}
+
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-1.5">
                   <Label htmlFor="firstName">First Name</Label>

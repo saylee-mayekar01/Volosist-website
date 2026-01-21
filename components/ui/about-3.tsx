@@ -1,9 +1,9 @@
+
 import { Button } from "./button";
 import { cn } from "../../lib/utils";
 
 interface About3Props {
-  title?: string;
-  description?: string;
+  onAction?: () => void;
   mainImage?: {
     src: string;
     alt: string;
@@ -28,36 +28,11 @@ interface About3Props {
 }
 
 const VolosistLogo = ({ className }: { className?: string }) => (
-  <svg
-    viewBox="0 0 100 100"
-    className={cn("w-8 h-8", className)}
-    fill="none"
-    xmlns="http://www.w3.org/2000/svg"
-  >
-    <circle
-      cx="50"
-      cy="50"
-      r="45"
-      stroke="currentColor"
-      strokeWidth="8"
-      className="text-blue-600 opacity-20"
-    />
-    <path
-      d="M30 45C30 45 40 75 50 75C60 75 85 25 85 25"
-      stroke="currentColor"
-      strokeWidth="10"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className="text-blue-600"
-    />
-    <path
-      d="M15 65C15 65 25 85 50 85C75 85 85 65 85 65"
-      stroke="currentColor"
-      strokeWidth="6"
-      strokeLinecap="round"
-      className="text-blue-500 opacity-40"
-    />
-  </svg>
+  <img
+    src="/favicon.ico"
+    alt="Volosist Logo"
+    className={cn("w-11 h-11 object-contain", className)}
+  />
 );
 
 const defaultCompanies = [
@@ -88,9 +63,10 @@ const defaultCompanies = [
 ];
 
 export const About3 = ({
+  onAction,
   mainImage = {
-    src: "https://images.unsplash.com/photo-1485827404703-89b55fcc595e?auto=format&fit=crop&q=80&w=1200",
-    alt: "AI Research Lab",
+    src: "https://images.unsplash.com/photo-1451187580459-43490279c0fa?auto=format&fit=crop&q=80&w=1200",
+    alt: "Neural Processing Core",
   },
   secondaryImage = {
     src: "https://images.unsplash.com/photo-1581091226825-a6a2a5aee158?auto=format&fit=crop&q=80&w=800",
@@ -101,7 +77,6 @@ export const About3 = ({
     description:
       "Providing enterprises with the core infrastructure needed to optimize workflows and scale at exponential rates.",
     buttonText: "Our Process",
-    buttonUrl: "#",
   },
   companiesTitle = "Powering industry leaders worldwide",
   companies = defaultCompanies,
@@ -123,10 +98,8 @@ export const About3 = ({
                 <p className="mb-2 text-xl font-bold text-slate-900">{breakout.title}</p>
                 <p className="text-sm text-slate-500 font-medium leading-relaxed">{breakout.description}</p>
               </div>
-              <Button variant="outline" className="mr-auto rounded-full font-bold uppercase tracking-widest text-[10px] h-9 px-6 relative z-10" asChild>
-                <a href={breakout.buttonUrl}>
-                  {breakout.buttonText}
-                </a>
+              <Button onClick={onAction} variant="outline" className="mr-auto rounded-full font-bold uppercase tracking-widest text-[10px] h-9 px-6 relative z-10">
+                {breakout.buttonText}
               </Button>
             </div>
             <img

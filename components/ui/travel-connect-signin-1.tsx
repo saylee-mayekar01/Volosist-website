@@ -1,16 +1,18 @@
+
 import React, { useRef, useEffect, useState } from "react";
 import { Eye, EyeOff, ArrowRight, ArrowLeft, Lock, Mail } from "lucide-react";
 import { motion } from "framer-motion";
 import { Button } from "./button";
 import { Input } from "./input";
 import { cn } from "../../lib/utils";
+import { supabase } from "../../lib/supabase";
 
 const VolosistLogo = ({ className }: { className?: string }) => (
-    <svg viewBox="0 0 100 100" className={cn("w-12 h-12", className)} fill="none" xmlns="http://www.w3.org/2000/svg">
-        <circle cx="50" cy="50" r="45" stroke="currentColor" strokeWidth="8" className="text-blue-600 opacity-20" />
-        <path d="M30 45C30 45 40 75 50 75C60 75 85 25 85 25" stroke="currentColor" strokeWidth="10" strokeLinecap="round" strokeLinejoin="round" className="text-blue-600" />
-        <path d="M15 65C15 65 25 85 50 85C75 85 85 65 85 65" stroke="currentColor" strokeWidth="6" strokeLinecap="round" className="text-blue-500 opacity-40" />
-    </svg>
+    <img 
+        src="/favicon.ico" 
+        alt="Volosist Logo" 
+        className={cn("w-15 h-15 object-contain", className)} 
+    />
 );
 
 const DotMap = () => {
@@ -70,18 +72,28 @@ const DotMap = () => {
   return <canvas ref={canvasRef} className="absolute inset-0 w-full h-full opacity-40" />;
 };
 
-export function SignInPage({ onSignIn, onGoToSignUp, onBack }: { onSignIn: (email: string) => void, onGoToSignUp: () => void, onBack?: () => void }) {
+export function SignInPage({ onSignInSuccess, onGoToSignUp, onBack }: { onSignInSuccess: () => void, onGoToSignUp: () => void, onBack?: () => void }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
-    setTimeout(() => {
+    setError(null);
+
+    const { error: authError } = await supabase.auth.signInWithPassword({
+      email,
+      password,
+    });
+
+    if (authError) {
+      setError(authError.message);
       setLoading(false);
-      onSignIn(email);
-    }, 1500);
+    } else {
+      onSignInSuccess();
+    }
   };
 
   return (
@@ -124,6 +136,12 @@ export function SignInPage({ onSignIn, onGoToSignUp, onBack }: { onSignIn: (emai
                 <h1 className="text-3xl font-bold text-slate-900 mb-2">Welcome back</h1>
                 <p className="text-slate-500 font-medium">Please enter your credentials to continue</p>
               </div>
+
+              {error && (
+                <div className="mb-6 p-4 bg-red-50 border border-red-100 rounded-xl text-red-600 text-sm font-medium">
+                  {error}
+                </div>
+              )}
 
               <form onSubmit={handleSubmit} className="space-y-6">
                 <div className="space-y-2">
