@@ -1,0 +1,6 @@
+<svg width="280" height="64" viewBox="0 0 280 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="64" height="64" rx="16" fill="#1D4ED8"/>
+  <path d="M16 18L27.5 46H36.5L48 18H41.8L32 41.5L22.2 18H16Z" fill="white"/>
+  <text x="78" y="28" font-family="Inter, Arial, sans-serif" font-size="22" font-weight="800" fill="#0F172A">VOLOSIST</text>
+  <text x="78" y="46" font-family="Inter, Arial, sans-serif" font-size="11" font-weight="600" fill="#475569" letter-spacing="0.12em">AI AUTOMATION SOLUTIONS</text>
+</svg>

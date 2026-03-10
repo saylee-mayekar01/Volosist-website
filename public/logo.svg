@@ -1,0 +1,10 @@
+<svg viewBox="0 0 320 320" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- Dark blue circle -->
+  <circle cx="160" cy="160" r="135" stroke="#001F3F" stroke-width="32" fill="none"/>
+  
+  <!-- Blue checkmark -->
+  <path d="M80 160C80 160 110 210 160 210C210 210 240 80 280 80" stroke="#2563EB" stroke-width="40" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+  
+  <!-- Yellow accent curve -->
+  <path d="M50 210C50 210 70 260 160 260C250 260 280 200 280 200" stroke="#FCD34D" stroke-width="25" stroke-linecap="round" fill="none"/>
+</svg>
