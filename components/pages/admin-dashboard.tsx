@@ -5,7 +5,10 @@ import { Button } from '../ui/button';
 import { Input } from '../ui/input';
 import { Badge } from '../ui/badge';
 import { cn } from '../../lib/utils';
-import { useStore, User, Payment, Invoice, Notification, ActivityLog } from '../../lib/store';
+import { useStore, User, Payment, Invoice, Notification, ActivityLog, ServiceCatalogItem } from '../../lib/store';
+import { downloadInvoicePdf } from '../../lib/invoice-pdf';
+import { createCashfreeRefund } from '../../lib/cashfree';
+import { requestRefundByOrder, cancelRefundByOrder, markRefundedByOrderWithMeta } from '../../lib/supabase';
 import {
   Shield, LayoutDashboard, Users, CreditCard, Package, BarChart3, Settings,
   LogOut, Search, Bell, ChevronRight, ChevronDown, DollarSign, TrendingUp,
@@ -13,7 +16,7 @@ import {
   CheckCircle, XCircle, Clock, AlertCircle, Filter, Calendar, FileText,
   Mail, Phone, MapPin, Building, UserCheck, UserX, Edit, Trash2, Plus,
   X, Activity, PieChart, Target, Zap, ShoppingCart, Receipt, Globe, Lock,
-  RotateCcw, History
+  RotateCcw, History, Briefcase, ToggleLeft, ToggleRight, ChevronUp, Loader2
 } from 'lucide-react';
 
 // Types
@@ -26,20 +29,84 @@ interface AdminUser {
 interface ServiceStat {
   id: string;
   name: string;
-  icon: string;
   color: string;
   activeUsers: number;
   revenue: number;
-  growth: number;
 }
 
-const SERVICE_STATS: ServiceStat[] = [
-  { id: '1', name: 'Sales Automation', icon: 'TrendingUp', color: 'bg-blue-600', activeUsers: 234, revenue: 348600, growth: 12.5 },
-  { id: '2', name: 'Marketing & Content', icon: 'Target', color: 'bg-purple-600', activeUsers: 189, revenue: 423400, growth: 8.3 },
-  { id: '3', name: 'Customer Support', icon: 'Users', color: 'bg-emerald-600', activeUsers: 156, revenue: 195200, growth: -2.1 },
-  { id: '4', name: 'Voice AI', icon: 'Phone', color: 'bg-cyan-600', activeUsers: 98, revenue: 156800, growth: 25.7 },
-  { id: '5', name: 'Data Analytics', icon: 'BarChart3', color: 'bg-orange-600', activeUsers: 145, revenue: 267300, growth: 15.2 },
-];
+const INVOICE_LOGO_PATH = '/volosist-logo.svg';
+const GLOBAL_SUPPORT_PHONE = '+91 9769789769';
+const GLOBAL_SUPPORT_EMAIL = 'volosist.ai@gmail.com';
+
+const REVENUE_PAYMENT_STATUSES: Payment['status'][] = ['completed', 'refund_pending', 'refund_cancelled'];
+
+const formatPaymentStatusLabel = (status: Payment['status']) =>
+  status
+    .split('_')
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ');
+
+const getPaymentStatusBadgeClass = (status: Payment['status']) => {
+  if (status === 'completed') return 'bg-emerald-100 text-emerald-700';
+  if (status === 'pending') return 'bg-orange-100 text-orange-700';
+  if (status === 'failed') return 'bg-red-100 text-red-700';
+  if (status === 'refund_pending') return 'bg-amber-100 text-amber-700';
+  if (status === 'refund_cancelled') return 'bg-slate-100 text-slate-700';
+  return 'bg-purple-100 text-purple-700';
+};
+
+const getPaymentStatusIcon = (status: Payment['status']) => {
+  if (status === 'completed') {
+    return {
+      containerClass: 'bg-emerald-100',
+      icon: <CheckCircle className="size-5 text-emerald-600" />,
+    };
+  }
+
+  if (status === 'pending') {
+    return {
+      containerClass: 'bg-orange-100',
+      icon: <Clock className="size-5 text-orange-600" />,
+    };
+  }
+
+  if (status === 'failed') {
+    return {
+      containerClass: 'bg-red-100',
+      icon: <XCircle className="size-5 text-red-600" />,
+    };
+  }
+
+  if (status === 'refund_pending') {
+    return {
+      containerClass: 'bg-amber-100',
+      icon: <RefreshCw className="size-5 text-amber-600" />,
+    };
+  }
+
+  if (status === 'refund_cancelled') {
+    return {
+      containerClass: 'bg-slate-100',
+      icon: <RotateCcw className="size-5 text-slate-600" />,
+    };
+  }
+
+  return {
+    containerClass: 'bg-purple-100',
+    icon: <RefreshCw className="size-5 text-purple-600" />,
+  };
+};
+
+const downloadAdminInvoicePdf = async (invoice: Invoice) => {
+  await downloadInvoicePdf(invoice, {
+    logoPath: INVOICE_LOGO_PATH,
+    supportPhone: GLOBAL_SUPPORT_PHONE,
+    supportEmail: GLOBAL_SUPPORT_EMAIL,
+    supportLabel: 'Global Support',
+    inquiryLabel: 'Email Inquiry',
+    fileSuffix: 'admin-invoice',
+  });
+};
 
 // Modal Component
 const Modal = ({ isOpen, onClose, title, children, size = 'md' }: { isOpen: boolean; onClose: () => void; title: string; children: React.ReactNode; size?: 'sm' | 'md' | 'lg' }) => {
@@ -99,6 +166,7 @@ export function AdminDashboard() {
   const invoices = store.getInvoices();
   const notifications = store.getNotifications();
   const activityLog = store.getActivityLog();
+  const serviceCatalog = store.getServiceCatalog();
   const stats = store.getStats();
 
   // Check auth on mount
@@ -116,11 +184,134 @@ export function AdminDashboard() {
     navigate('/admin');
   };
 
+  const buildFallbackInvoiceFromPayment = (payment: Payment): Invoice => {
+    const paymentDate = payment.date || new Date().toISOString();
+    const dueDate = new Date(paymentDate);
+    dueDate.setDate(dueDate.getDate() + 15);
+    const fallbackInvoiceStatus: Invoice['status'] =
+      payment.status === 'completed' || payment.status === 'refund_cancelled'
+        ? 'paid'
+        : payment.status === 'pending' || payment.status === 'refund_pending'
+          ? 'pending'
+          : 'overdue';
+
+    const fallbackItems = payment.items?.length
+      ? payment.items.map((item) => ({
+          name: item.name,
+          plan: item.plan,
+          quantity: 1,
+          unitPrice: item.price,
+          total: item.price,
+        }))
+      : [{ name: payment.service, plan: payment.plan, quantity: 1, unitPrice: payment.amount, total: payment.amount }];
+
+    return {
+      id: `inv_fallback_${payment.id}`,
+      invoiceNumber: `INV-${new Date(paymentDate).getFullYear()}-${payment.orderId}`,
+      paymentId: payment.id,
+      userId: payment.userId,
+      userName: payment.userName,
+      userEmail: payment.userEmail,
+      date: paymentDate,
+      dueDate: dueDate.toISOString(),
+      items: fallbackItems,
+      subtotal: payment.amount,
+      tax: Math.round(payment.amount * 0.18),
+      total: Math.round(payment.amount * 1.18),
+      status: fallbackInvoiceStatus,
+      paidDate: fallbackInvoiceStatus === 'paid' ? paymentDate : undefined,
+      customerInfo: {
+        name: payment.userName,
+        email: payment.userEmail,
+        company: '',
+        address: 'Address not available',
+      },
+    };
+  };
+
+  const handleDownloadPaymentReceipt = async (payment: Payment) => {
+    const linkedInvoice = invoices.find((invoice) => invoice.paymentId === payment.id);
+    const invoiceForDownload = linkedInvoice || buildFallbackInvoiceFromPayment(payment);
+    await downloadAdminInvoicePdf(invoiceForDownload);
+  };
+
+  const syncRefundStatusWithSupabase = async (
+    payment: Payment,
+    nextStatus: Payment['status'],
+    reason = 'Admin review'
+  ) => {
+    if (!payment.cashfreeOrderId) {
+      throw new Error('Missing Cashfree order reference for refund workflow.');
+    }
+
+    if (nextStatus === 'refund_pending') {
+      await requestRefundByOrder(payment.cashfreeOrderId, reason);
+      return { settled: false as const };
+    } else if (nextStatus === 'refund_cancelled') {
+      await cancelRefundByOrder(payment.cashfreeOrderId);
+      return { settled: false as const };
+    } else if (nextStatus === 'refunded') {
+      const refundResponse = await createCashfreeRefund({
+        orderId: payment.cashfreeOrderId,
+        reason,
+        refundAmount: payment.amount,
+        refundSpeed: 'STANDARD',
+      });
+
+      const gatewayStatus = String(refundResponse.refund_status || '').toUpperCase();
+      const settledStatuses = new Set(['SUCCESS', 'COMPLETED', 'PROCESSED', 'REFUNDED']);
+      const isSettled = settledStatuses.has(gatewayStatus);
+      const liquidityState = String(refundResponse.liquidity_state || '').toUpperCase() || undefined;
+
+      if (isSettled) {
+        await markRefundedByOrderWithMeta(payment.cashfreeOrderId, {
+          refundId: refundResponse.refund_id,
+          refundAmountPaise: Math.round(Number(refundResponse.refund_amount || payment.amount) * 100),
+          refundStatus: gatewayStatus,
+          refundNote: reason,
+        });
+      } else {
+        await requestRefundByOrder(
+          payment.cashfreeOrderId,
+          `${reason} | Refund Ref: ${refundResponse.refund_id} | Gateway Status: ${gatewayStatus || 'PENDING'}${
+            liquidityState ? ` | Liquidity: ${liquidityState}` : ''
+          }`
+        );
+      }
+
+      return {
+        settled: isSettled,
+        refundId: refundResponse.refund_id,
+        refundStatus: gatewayStatus || 'PENDING',
+        refundAmount: Number(refundResponse.refund_amount || payment.amount),
+        bankReference: refundResponse.bank_reference || '',
+        liquidityState,
+      };
+    }
+
+    return { settled: false as const };
+  };
+
   // Stats from store
   const totalRevenue = stats.totalRevenue;
   const pendingPayments = stats.pendingPayments;
   const activeUsers = stats.activeUsers;
   const totalUsers = stats.totalUsers;
+
+  const serviceColors = ['bg-blue-600', 'bg-purple-600', 'bg-emerald-600', 'bg-cyan-600', 'bg-orange-600'];
+  const serviceStats: ServiceStat[] = serviceCatalog.map((service, index) => {
+    const relatedPayments = payments.filter((payment) => payment.service.toLowerCase() === service.name.toLowerCase());
+    const revenuePayments = relatedPayments.filter((payment) => REVENUE_PAYMENT_STATUSES.includes(payment.status));
+    const uniqueUsers = new Set(revenuePayments.map((payment) => payment.userId)).size;
+
+    return {
+      id: service.id,
+      name: service.name,
+      color: serviceColors[index % serviceColors.length],
+      activeUsers: uniqueUsers,
+      revenue: revenuePayments.reduce((sum, payment) => sum + payment.amount, 0),
+    };
+  });
 
   const SIDEBAR_ITEMS = [
     { id: 'overview', label: 'Overview', icon: LayoutDashboard },
@@ -130,6 +321,7 @@ export function AdminDashboard() {
     { id: 'activity', label: 'Activity Log', icon: History },
     { id: 'services', label: 'Services', icon: Package },
     { id: 'analytics', label: 'Analytics', icon: BarChart3 },
+    { id: 'careers', label: 'Careers', icon: Briefcase },
     { id: 'settings', label: 'Settings', icon: Settings },
   ];
 
@@ -213,6 +405,7 @@ export function AdminDashboard() {
                 {activeTab === 'activity' && 'Monitor system activity'}
                 {activeTab === 'services' && 'Monitor service performance'}
                 {activeTab === 'analytics' && 'View detailed analytics'}
+                {activeTab === 'careers' && 'Post and manage job openings'}
                 {activeTab === 'settings' && 'Configure admin settings'}
               </p>
             </div>
@@ -259,7 +452,7 @@ export function AdminDashboard() {
               activeUsers={activeUsers}
               totalUsers={totalUsers}
               recentPayments={payments.slice(0, 5)}
-              serviceStats={SERVICE_STATS}
+              serviceStats={serviceStats}
               activityLog={activityLog.slice(0, 5)}
             />
           )}
@@ -289,6 +482,7 @@ export function AdminDashboard() {
             <InvoicesView 
               invoices={invoices}
               searchQuery={searchQuery}
+              onDownloadInvoice={downloadAdminInvoicePdf}
             />
           )}
           {activeTab === 'activity' && (
@@ -297,8 +491,9 @@ export function AdminDashboard() {
               users={users}
             />
           )}
-          {activeTab === 'services' && <ServicesView serviceStats={SERVICE_STATS} />}
+          {activeTab === 'services' && <ServicesView store={store} />}
           {activeTab === 'analytics' && <AnalyticsView payments={payments} users={users} stats={stats} />}
+          {activeTab === 'careers' && <CareersView />}
           {activeTab === 'settings' && <SettingsView admin={admin} store={store} />}
         </div>
       </main>
@@ -398,13 +593,8 @@ export function AdminDashboard() {
                 <h3 className="text-lg font-bold text-slate-900">{selectedPayment.orderId}</h3>
                 <p className="text-sm text-slate-500">{new Date(selectedPayment.date).toLocaleString()}</p>
               </div>
-              <Badge className={cn(
-                selectedPayment.status === 'completed' ? 'bg-emerald-100 text-emerald-700' :
-                selectedPayment.status === 'pending' ? 'bg-orange-100 text-orange-700' :
-                selectedPayment.status === 'failed' ? 'bg-red-100 text-red-700' :
-                'bg-purple-100 text-purple-700'
-              )}>
-                {selectedPayment.status.charAt(0).toUpperCase() + selectedPayment.status.slice(1)}
+              <Badge className={cn(getPaymentStatusBadgeClass(selectedPayment.status))}>
+                {formatPaymentStatusLabel(selectedPayment.status)}
               </Badge>
             </div>
 
@@ -428,22 +618,109 @@ export function AdminDashboard() {
               <div className="p-4 bg-slate-50 rounded-xl">
                 <p className="font-bold text-slate-900">{selectedPayment.service}</p>
                 <p className="text-sm text-slate-500">{selectedPayment.plan} Plan</p>
+                {selectedPayment.cashfreeOrderId && (
+                  <p className="text-xs text-slate-500 mt-2">Cashfree Order: {selectedPayment.cashfreeOrderId}</p>
+                )}
+                {selectedPayment.refundReason && (
+                  <p className="text-xs text-slate-500 mt-1">Refund Reason: {selectedPayment.refundReason}</p>
+                )}
               </div>
             </div>
 
             <div className="flex gap-3">
-              {selectedPayment.status === 'completed' && (
+              {(selectedPayment.status === 'completed' || selectedPayment.status === 'refund_cancelled') && (
                 <Button 
                   variant="outline" 
-                  className="flex-1 gap-2 text-red-600 border-red-200 hover:bg-red-50"
-                  onClick={() => {
-                    store.updatePaymentStatus(selectedPayment.id, 'refunded');
-                    setShowPaymentModal(false);
+                  className="flex-1 gap-2 text-amber-700 border-amber-200 hover:bg-amber-50"
+                  onClick={async () => {
+                    try {
+                      await syncRefundStatusWithSupabase(selectedPayment, 'refund_pending', 'Admin review initiated');
+                      store.updatePaymentStatus(selectedPayment.id, 'refund_pending', { reason: 'Admin review initiated' });
+                      setShowPaymentModal(false);
+                    } catch (error) {
+                      console.warn('[admin] unable to mark refund pending', error);
+                      window.alert('Unable to sync refund request with Supabase. Please retry.');
+                    }
                   }}
                 >
-                  <RefreshCw size={16} /> Process Refund
+                  <RefreshCw size={16} /> Mark Refund Pending
                 </Button>
               )}
+
+              {selectedPayment.status === 'refund_pending' && (
+                <>
+                  <Button 
+                    variant="outline" 
+                    className="flex-1 gap-2 text-purple-700 border-purple-200 hover:bg-purple-50"
+                    onClick={async () => {
+                      try {
+                        const refundResult = await syncRefundStatusWithSupabase(
+                          selectedPayment,
+                          'refunded',
+                          selectedPayment.refundReason || 'Admin approved refund request'
+                        );
+
+                        const refundNotes = [
+                          refundResult.refundId ? `Refund Ref: ${refundResult.refundId}` : '',
+                          refundResult.refundStatus ? `Gateway Status: ${refundResult.refundStatus}` : '',
+                          refundResult.bankReference ? `Bank Ref: ${refundResult.bankReference}` : '',
+                        ]
+                          .filter(Boolean)
+                          .join(' | ');
+
+                        store.updatePaymentStatus(
+                          selectedPayment.id,
+                          refundResult.settled ? 'refunded' : 'refund_pending',
+                          {
+                            reason: selectedPayment.refundReason || 'Admin approved refund request',
+                            notes: refundNotes || selectedPayment.refundNotes,
+                          }
+                        );
+
+                        if (!refundResult.settled) {
+                          const isOnHold =
+                            String(refundResult.refundStatus || '').toUpperCase() === 'ONHOLD' ||
+                            String(refundResult.liquidityState || '').toUpperCase() === 'ONHOLD';
+
+                          window.alert(
+                            isOnHold
+                              ? 'Refund is ONHOLD due insufficient refund wallet/settlement balance. It will auto-process once funds are available.'
+                              : `Refund initiated with status ${refundResult.refundStatus || 'PENDING'}. It will remain pending until gateway settlement is confirmed.`
+                          );
+                        }
+
+                        setShowPaymentModal(false);
+                      } catch (error) {
+                        console.warn('[admin] unable to approve refund', error);
+                        window.alert(
+                          error instanceof Error
+                            ? error.message
+                            : 'Unable to process refund with gateway. Please retry.'
+                        );
+                      }
+                    }}
+                  >
+                    <CheckCircle size={16} /> Approve Refund
+                  </Button>
+                  <Button 
+                    variant="outline" 
+                    className="flex-1 gap-2 text-slate-700 border-slate-300 hover:bg-slate-50"
+                    onClick={async () => {
+                      try {
+                        await syncRefundStatusWithSupabase(selectedPayment, 'refund_cancelled');
+                        store.updatePaymentStatus(selectedPayment.id, 'refund_cancelled');
+                        setShowPaymentModal(false);
+                      } catch (error) {
+                        console.warn('[admin] unable to cancel refund request', error);
+                        window.alert('Unable to sync refund cancellation with Supabase. Please retry.');
+                      }
+                    }}
+                  >
+                    <XCircle size={16} /> Cancel Request
+                  </Button>
+                </>
+              )}
+
               {selectedPayment.status === 'pending' && (
                 <>
                   <Button 
@@ -468,7 +745,17 @@ export function AdminDashboard() {
                   </Button>
                 </>
               )}
-              <Button variant="outline" className="gap-2">
+              <Button
+                variant="outline"
+                className="gap-2"
+                onClick={async () => {
+                  try {
+                    await handleDownloadPaymentReceipt(selectedPayment);
+                  } catch {
+                    window.alert('Unable to download payment receipt PDF right now. Please try again.');
+                  }
+                }}
+              >
                 <Download size={16} /> Download Receipt
               </Button>
             </div>
@@ -560,9 +847,7 @@ const OverviewView = ({ totalRevenue, pendingPayments, activeUsers, totalUsers, 
             <div className="size-12 rounded-xl bg-emerald-100 flex items-center justify-center">
               <DollarSign className="size-6 text-emerald-600" />
             </div>
-            <Badge className="bg-emerald-100 text-emerald-700 gap-1">
-              <TrendingUp size={12} /> 12.5%
-            </Badge>
+            <Badge className="bg-emerald-100 text-emerald-700">Live</Badge>
           </div>
           <div className="text-3xl font-black text-slate-900">₹{totalRevenue.toLocaleString()}</div>
           <div className="text-sm text-slate-500 mt-1">Total Revenue</div>
@@ -578,9 +863,7 @@ const OverviewView = ({ totalRevenue, pendingPayments, activeUsers, totalUsers, 
             <div className="size-12 rounded-xl bg-blue-100 flex items-center justify-center">
               <Users className="size-6 text-blue-600" />
             </div>
-            <Badge className="bg-blue-100 text-blue-700 gap-1">
-              <TrendingUp size={12} /> 8.3%
-            </Badge>
+            <Badge className="bg-blue-100 text-blue-700">Live</Badge>
           </div>
           <div className="text-3xl font-black text-slate-900">{activeUsers}/{totalUsers}</div>
           <div className="text-sm text-slate-500 mt-1">Active Users</div>
@@ -611,9 +894,7 @@ const OverviewView = ({ totalRevenue, pendingPayments, activeUsers, totalUsers, 
             <div className="size-12 rounded-xl bg-purple-100 flex items-center justify-center">
               <Package className="size-6 text-purple-600" />
             </div>
-            <Badge className="bg-purple-100 text-purple-700 gap-1">
-              <TrendingUp size={12} /> 5 Active
-            </Badge>
+            <Badge className="bg-purple-100 text-purple-700">Live</Badge>
           </div>
           <div className="text-3xl font-black text-slate-900">{serviceStats.length}</div>
           <div className="text-sm text-slate-500 mt-1">Total Services</div>
@@ -634,13 +915,7 @@ const OverviewView = ({ totalRevenue, pendingPayments, activeUsers, totalUsers, 
                 <div className="flex-1">
                   <div className="flex items-center justify-between mb-1">
                     <span className="font-medium text-slate-900">{service.name}</span>
-                    <span className={cn(
-                      "text-sm font-bold flex items-center gap-1",
-                      service.growth >= 0 ? 'text-emerald-600' : 'text-red-600'
-                    )}>
-                      {service.growth >= 0 ? <TrendingUp size={14} /> : <TrendingDown size={14} />}
-                      {Math.abs(service.growth)}%
-                    </span>
+                    <span className="text-xs font-semibold text-slate-500">Live</span>
                   </div>
                   <div className="flex items-center justify-between text-sm text-slate-500">
                     <span>{service.activeUsers} users</span>
@@ -661,31 +936,27 @@ const OverviewView = ({ totalRevenue, pendingPayments, activeUsers, totalUsers, 
             </Button>
           </div>
           <div className="space-y-3">
-            {recentPayments.map((payment) => (
-              <div key={payment.id} className="flex items-center justify-between p-3 bg-slate-50 rounded-xl">
-                <div className="flex items-center gap-3">
-                  <div className={cn(
-                    "size-10 rounded-xl flex items-center justify-center",
-                    payment.status === 'completed' ? 'bg-emerald-100' :
-                    payment.status === 'pending' ? 'bg-orange-100' :
-                    payment.status === 'failed' ? 'bg-red-100' : 'bg-purple-100'
-                  )}>
-                    {payment.status === 'completed' ? <CheckCircle className="size-5 text-emerald-600" /> :
-                     payment.status === 'pending' ? <Clock className="size-5 text-orange-600" /> :
-                     payment.status === 'failed' ? <XCircle className="size-5 text-red-600" /> :
-                     <RefreshCw className="size-5 text-purple-600" />}
+            {recentPayments.map((payment) => {
+              const statusIcon = getPaymentStatusIcon(payment.status);
+
+              return (
+                <div key={payment.id} className="flex items-center justify-between p-3 bg-slate-50 rounded-xl">
+                  <div className="flex items-center gap-3">
+                    <div className={cn("size-10 rounded-xl flex items-center justify-center", statusIcon.containerClass)}>
+                      {statusIcon.icon}
+                    </div>
+                    <div>
+                      <p className="font-medium text-slate-900">{payment.userName}</p>
+                      <p className="text-xs text-slate-500">{payment.service}</p>
+                    </div>
                   </div>
-                  <div>
-                    <p className="font-medium text-slate-900">{payment.userName}</p>
-                    <p className="text-xs text-slate-500">{payment.service}</p>
+                  <div className="text-right">
+                    <p className="font-bold text-slate-900">₹{payment.amount.toLocaleString()}</p>
+                    <p className="text-xs text-slate-500">{payment.method}</p>
                   </div>
                 </div>
-                <div className="text-right">
-                  <p className="font-bold text-slate-900">₹{payment.amount.toLocaleString()}</p>
-                  <p className="text-xs text-slate-500">{payment.method}</p>
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       </div>
@@ -810,14 +1081,18 @@ const PaymentsView = ({ payments, store, searchQuery, onSelectPayment }: {
     return matchesSearch && matchesStatus;
   });
 
-  const totalCompleted = payments.filter(p => p.status === 'completed').reduce((sum, p) => sum + p.amount, 0);
-  const totalPending = payments.filter(p => p.status === 'pending').reduce((sum, p) => sum + p.amount, 0);
+  const totalCompleted = payments
+    .filter((payment) => payment.status === 'completed' || payment.status === 'refund_cancelled')
+    .reduce((sum, payment) => sum + payment.amount, 0);
+  const totalPending = payments.filter((payment) => payment.status === 'pending').reduce((sum, payment) => sum + payment.amount, 0);
+  const refundPendingCount = payments.filter((payment) => payment.status === 'refund_pending').length;
+  const refundCancelledCount = payments.filter((payment) => payment.status === 'refund_cancelled').length;
   const totalRefunded = payments.filter(p => p.status === 'refunded').reduce((sum, p) => sum + p.amount, 0);
 
   return (
     <div className="space-y-6">
       {/* Summary Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
         <div className="bg-emerald-50 p-4 rounded-2xl border border-emerald-200">
           <div className="flex items-center gap-2 mb-2">
             <CheckCircle className="size-5 text-emerald-600" />
@@ -832,6 +1107,13 @@ const PaymentsView = ({ payments, store, searchQuery, onSelectPayment }: {
           </div>
           <div className="text-2xl font-black text-orange-700">₹{totalPending.toLocaleString()}</div>
         </div>
+        <div className="bg-amber-50 p-4 rounded-2xl border border-amber-200">
+          <div className="flex items-center gap-2 mb-2">
+            <RefreshCw className="size-5 text-amber-600" />
+            <span className="text-sm font-medium text-amber-600">Refund Pending</span>
+          </div>
+          <div className="text-2xl font-black text-amber-700">{refundPendingCount}</div>
+        </div>
         <div className="bg-red-50 p-4 rounded-2xl border border-red-200">
           <div className="flex items-center gap-2 mb-2">
             <XCircle className="size-5 text-red-600" />
@@ -845,13 +1127,14 @@ const PaymentsView = ({ payments, store, searchQuery, onSelectPayment }: {
             <span className="text-sm font-medium text-purple-600">Refunded</span>
           </div>
           <div className="text-2xl font-black text-purple-700">₹{totalRefunded.toLocaleString()}</div>
+          <div className="text-xs text-purple-600 mt-1">Cancelled: {refundCancelledCount}</div>
         </div>
       </div>
 
       {/* Filters */}
       <div className="flex items-center justify-between">
         <div className="flex gap-2">
-          {['all', 'completed', 'pending', 'failed', 'refunded'].map((status) => (
+          {['all', 'completed', 'pending', 'refund_pending', 'refund_cancelled', 'failed', 'refunded'].map((status) => (
             <Button
               key={status}
               variant={statusFilter === status ? 'default' : 'outline'}
@@ -859,7 +1142,7 @@ const PaymentsView = ({ payments, store, searchQuery, onSelectPayment }: {
               onClick={() => setStatusFilter(status)}
               className="capitalize"
             >
-              {status}
+              {status.replace('_', ' ')}
             </Button>
           ))}
         </div>
@@ -906,14 +1189,8 @@ const PaymentsView = ({ payments, store, searchQuery, onSelectPayment }: {
             </div>
             <div className="col-span-1 text-right font-bold text-slate-900">₹{payment.amount.toLocaleString()}</div>
             <div className="col-span-1 text-center">
-              <Badge className={cn(
-                "text-xs",
-                payment.status === 'completed' ? 'bg-emerald-100 text-emerald-700' :
-                payment.status === 'pending' ? 'bg-orange-100 text-orange-700' :
-                payment.status === 'failed' ? 'bg-red-100 text-red-700' :
-                'bg-purple-100 text-purple-700'
-              )}>
-                {payment.status}
+              <Badge className={cn('text-xs', getPaymentStatusBadgeClass(payment.status))}>
+                {formatPaymentStatusLabel(payment.status)}
               </Badge>
             </div>
             <div className="col-span-1 flex justify-end gap-1">
@@ -932,48 +1209,282 @@ const PaymentsView = ({ payments, store, searchQuery, onSelectPayment }: {
 };
 
 // Services View
-const ServicesView = ({ serviceStats }: { serviceStats: ServiceStat[] }) => {
+const ServicesView = ({ store }: { store: ReturnType<typeof useStore> }) => {
+  const [serviceCatalog, setServiceCatalog] = useState<ServiceCatalogItem[]>(store.getServiceCatalog());
+  const [showCreateForm, setShowCreateForm] = useState(false);
+  const [newServiceName, setNewServiceName] = useState('');
+  const [newServiceDescription, setNewServiceDescription] = useState('');
+  const [newBasicPrice, setNewBasicPrice] = useState(490);
+  const [newProPrice, setNewProPrice] = useState(1490);
+  const [newBusinessPrice, setNewBusinessPrice] = useState(4990);
+  const [draftServices, setDraftServices] = useState<Record<string, ServiceCatalogItem>>({});
+  const [savedServiceId, setSavedServiceId] = useState<string | null>(null);
+
+  useEffect(() => {
+    const syncCatalog = () => {
+      setServiceCatalog(store.getServiceCatalog());
+    };
+
+    syncCatalog();
+    const unsubscribe = store.subscribe(syncCatalog);
+    return unsubscribe;
+  }, [store]);
+
+  useEffect(() => {
+    const nextDrafts: Record<string, ServiceCatalogItem> = {};
+    serviceCatalog.forEach((service) => {
+      nextDrafts[service.id] = {
+        ...service,
+        plans: service.plans.map((plan) => ({ ...plan })),
+      };
+    });
+    setDraftServices(nextDrafts);
+  }, [serviceCatalog]);
+
+  const updateServicePrice = (service: ServiceCatalogItem, planName: string, nextPrice: number) => {
+    if (Number.isNaN(nextPrice) || nextPrice < 0) return;
+
+    const activeService = draftServices[service.id] ?? service;
+    const nextPlans = activeService.plans.map((plan) =>
+      plan.name === planName ? { ...plan, price: Math.round(nextPrice) } : plan
+    );
+
+    setDraftServices((previous) => ({
+      ...previous,
+      [service.id]: {
+        ...activeService,
+        plans: nextPlans,
+      },
+    }));
+  };
+
+  const updateServiceDraftField = (service: ServiceCatalogItem, updates: Partial<Pick<ServiceCatalogItem, 'name' | 'description'>>) => {
+    const activeService = draftServices[service.id] ?? service;
+    setDraftServices((previous) => ({
+      ...previous,
+      [service.id]: {
+        ...activeService,
+        ...updates,
+      },
+    }));
+  };
+
+  const handleSaveService = (serviceId: string) => {
+    const draft = draftServices[serviceId];
+    if (!draft) return;
+
+    store.updateServiceCatalogItem(serviceId, {
+      name: draft.name.trim(),
+      description: draft.description.trim(),
+      plans: draft.plans,
+    });
+
+    setSavedServiceId(serviceId);
+    window.setTimeout(() => {
+      setSavedServiceId((previous) => (previous === serviceId ? null : previous));
+    }, 2000);
+  };
+
+  const handleResetServiceDraft = (service: ServiceCatalogItem) => {
+    setDraftServices((previous) => ({
+      ...previous,
+      [service.id]: {
+        ...service,
+        plans: service.plans.map((plan) => ({ ...plan })),
+      },
+    }));
+  };
+
+  const handleCreateService = () => {
+    if (!newServiceName.trim() || !newServiceDescription.trim()) return;
+
+    store.addServiceCatalogItem({
+      name: newServiceName.trim(),
+      description: newServiceDescription.trim(),
+      plans: [
+        { name: 'Basic', price: Math.max(0, Math.round(newBasicPrice)), features: ['Starter features'], limit: 1000 },
+        { name: 'Pro', price: Math.max(0, Math.round(newProPrice)), features: ['Advanced features'], limit: 10000 },
+        { name: 'Business', price: Math.max(0, Math.round(newBusinessPrice)), features: ['Enterprise features'], limit: 100000 },
+      ],
+    });
+
+    setNewServiceName('');
+    setNewServiceDescription('');
+    setNewBasicPrice(490);
+    setNewProPrice(1490);
+    setNewBusinessPrice(4990);
+    setShowCreateForm(false);
+  };
+
+  const handleDeleteService = (service: ServiceCatalogItem) => {
+    if (!window.confirm(`Delete service "${service.name}"?`)) return;
+    store.deleteServiceCatalogItem(service.id);
+  };
+
   return (
     <div className="space-y-6">
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-        {serviceStats.map((service) => (
+      <div className="bg-white rounded-2xl border border-slate-200 p-5">
+        <div className="flex items-center justify-between">
+          <div>
+            <h3 className="text-lg font-bold text-slate-900">Service Catalog</h3>
+            <p className="text-sm text-slate-500 mt-0.5">Create, update, and delete services with live dashboard sync.</p>
+          </div>
+          <Button className="gap-2 bg-blue-600 hover:bg-blue-700" onClick={() => setShowCreateForm((prev) => !prev)}>
+            <Plus size={16} /> {showCreateForm ? 'Close' : 'Add Service'}
+          </Button>
+        </div>
+
+        {showCreateForm && (
+          <div className="mt-5 grid grid-cols-1 md:grid-cols-3 gap-3">
+            <Input
+              placeholder="Service name"
+              value={newServiceName}
+              onChange={(event) => setNewServiceName(event.target.value)}
+              className="h-10 rounded-lg"
+            />
+            <Input
+              placeholder="Service description"
+              value={newServiceDescription}
+              onChange={(event) => setNewServiceDescription(event.target.value)}
+              className="h-10 rounded-lg md:col-span-2"
+            />
+
+            <div>
+              <label className="text-[11px] font-bold uppercase tracking-wider text-slate-400">Basic Price</label>
+              <Input
+                type="number"
+                min={0}
+                value={newBasicPrice}
+                onChange={(event) => setNewBasicPrice(Number(event.target.value))}
+                className="h-10 rounded-lg mt-1"
+              />
+            </div>
+            <div>
+              <label className="text-[11px] font-bold uppercase tracking-wider text-slate-400">Pro Price</label>
+              <Input
+                type="number"
+                min={0}
+                value={newProPrice}
+                onChange={(event) => setNewProPrice(Number(event.target.value))}
+                className="h-10 rounded-lg mt-1"
+              />
+            </div>
+            <div>
+              <label className="text-[11px] font-bold uppercase tracking-wider text-slate-400">Business Price</label>
+              <Input
+                type="number"
+                min={0}
+                value={newBusinessPrice}
+                onChange={(event) => setNewBusinessPrice(Number(event.target.value))}
+                className="h-10 rounded-lg mt-1"
+              />
+            </div>
+
+            <div className="md:col-span-3 flex justify-end">
+              <Button
+                onClick={handleCreateService}
+                disabled={!newServiceName.trim() || !newServiceDescription.trim()}
+                className="bg-slate-900 hover:bg-slate-800"
+              >
+                Create Service
+              </Button>
+            </div>
+          </div>
+        )}
+      </div>
+
+      <div className="space-y-5">
+        {serviceCatalog.length === 0 && (
+          <div className="bg-white rounded-2xl border border-slate-200 p-12 text-center text-slate-500">
+            No services found. Create your first service to start pricing management.
+          </div>
+        )}
+
+        {serviceCatalog.map((service) => {
+          const draftService = draftServices[service.id] ?? service;
+          return (
           <motion.div
             key={service.id}
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
-            className="bg-white rounded-2xl border border-slate-200 p-6 hover:shadow-lg transition-shadow"
+            className="bg-white rounded-2xl border border-slate-200 p-6"
           >
-            <div className="flex items-start justify-between mb-6">
-              <div className={cn("size-14 rounded-2xl flex items-center justify-center", service.color)}>
-                <Package className="size-7 text-white" />
+            <div className="flex items-start justify-between mb-6 gap-6">
+              <div className="flex-1 space-y-3">
+                <div>
+                  <label className="text-[11px] font-bold uppercase tracking-wider text-slate-400">Service Name</label>
+                  <Input
+                    value={draftService.name}
+                    onChange={(event) => updateServiceDraftField(service, { name: event.target.value })}
+                    className="mt-1 h-10 rounded-lg bg-white"
+                  />
+                </div>
+                <div>
+                  <label className="text-[11px] font-bold uppercase tracking-wider text-slate-400">Service Description</label>
+                  <Input
+                    value={draftService.description}
+                    onChange={(event) => updateServiceDraftField(service, { description: event.target.value })}
+                    className="mt-1 h-10 rounded-lg bg-white"
+                  />
+                </div>
               </div>
-              <Badge className={cn(
-                "gap-1",
-                service.growth >= 0 ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'
-              )}>
-                {service.growth >= 0 ? <TrendingUp size={12} /> : <TrendingDown size={12} />}
-                {Math.abs(service.growth)}%
-              </Badge>
+              <div className="flex items-center gap-2">
+                <Badge className="bg-blue-100 text-blue-700">{draftService.plans.length} plans</Badge>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="size-9 text-red-500 hover:bg-red-50 hover:text-red-600"
+                  onClick={() => handleDeleteService(service)}
+                  title="Delete service"
+                >
+                  <Trash2 size={16} />
+                </Button>
+              </div>
             </div>
-            <h3 className="text-lg font-bold text-slate-900 mb-4">{service.name}</h3>
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <div className="text-2xl font-black text-slate-900">{service.activeUsers}</div>
-                <div className="text-xs text-slate-500">Active Users</div>
-              </div>
-              <div>
-                <div className="text-2xl font-black text-slate-900">₹{(service.revenue / 1000).toFixed(0)}K</div>
-                <div className="text-xs text-slate-500">Revenue</div>
-              </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              {draftService.plans.map((plan) => (
+                <div key={`${service.id}-${plan.name}`} className="rounded-xl border border-slate-200 p-4 bg-slate-50">
+                  <p className="text-xs font-black uppercase tracking-widest text-slate-500 mb-2">{plan.name}</p>
+                  <label className="text-[11px] font-bold uppercase tracking-wider text-slate-400">Monthly Price (INR)</label>
+                  <Input
+                    type="number"
+                    min={0}
+                    value={plan.price}
+                    onChange={(event) => updateServicePrice(service, plan.name, Number(event.target.value))}
+                    className="mt-1 h-10 rounded-lg bg-white"
+                  />
+                  <p className="text-[11px] text-slate-500 mt-2">Limit: {plan.limit.toLocaleString()}</p>
+                </div>
+              ))}
             </div>
-            <div className="mt-4 pt-4 border-t border-slate-100 flex gap-2">
-              <Button variant="outline" size="sm" className="flex-1">View Details</Button>
-              <Button variant="ghost" size="icon" className="size-8">
-                <Edit size={14} />
-              </Button>
+
+            <div className="mt-5 flex items-center justify-between gap-3">
+              <p className="text-xs text-slate-500">
+                Edit values and click Save Changes to sync with the user dashboard services page.
+              </p>
+              <div className="flex items-center gap-2">
+                {savedServiceId === service.id && (
+                  <span className="text-xs font-semibold text-emerald-600">Saved successfully</span>
+                )}
+                <Button
+                  variant="outline"
+                  className="h-9 px-4 rounded-lg"
+                  onClick={() => handleResetServiceDraft(service)}
+                >
+                  Reset
+                </Button>
+                <Button
+                  className="h-9 px-4 rounded-lg bg-slate-900 hover:bg-slate-800"
+                  onClick={() => handleSaveService(service.id)}
+                >
+                  Save Changes
+                </Button>
+              </div>
             </div>
           </motion.div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );
@@ -981,6 +1492,15 @@ const ServicesView = ({ serviceStats }: { serviceStats: ServiceStat[] }) => {
 
 // Analytics View
 const AnalyticsView = ({ payments, users, stats }: { payments: Payment[]; users: User[]; stats: ReturnType<typeof useStore>['getStats'] extends () => infer R ? R : never }) => {
+  const completedPayments = payments.filter(p => p.status === 'completed');
+  const conversionRate = payments.length ? (completedPayments.length / payments.length) * 100 : 0;
+  const avgOrderValue = completedPayments.length
+    ? completedPayments.reduce((sum, payment) => sum + payment.amount, 0) / completedPayments.length
+    : 0;
+  const churnRate = users.length
+    ? (users.filter(user => user.status === 'suspended').length / users.length) * 100
+    : 0;
+
   return (
     <div className="space-y-6">
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -1019,8 +1539,9 @@ const AnalyticsView = ({ payments, users, stats }: { payments: Payment[]; users:
             <span className="text-sm font-medium text-slate-600">Conversion Rate</span>
           </div>
           <div className="text-3xl font-black text-slate-900">12.4%</div>
-          <div className="flex items-center gap-1 text-emerald-600 text-sm mt-2">
-            <TrendingUp size={14} /> +2.1% from last month
+          <div className="text-3xl font-black text-slate-900">{conversionRate.toFixed(1)}%</div>
+          <div className="flex items-center gap-1 text-slate-500 text-sm mt-2">
+            <Activity size={14} /> Live conversion
           </div>
         </div>
 
@@ -1031,9 +1552,9 @@ const AnalyticsView = ({ payments, users, stats }: { payments: Payment[]; users:
             </div>
             <span className="text-sm font-medium text-slate-600">Avg. Order Value</span>
           </div>
-          <div className="text-3xl font-black text-slate-900">₹2,340</div>
-          <div className="flex items-center gap-1 text-emerald-600 text-sm mt-2">
-            <TrendingUp size={14} /> +8.7% from last month
+          <div className="text-3xl font-black text-slate-900">₹{Math.round(avgOrderValue).toLocaleString()}</div>
+          <div className="flex items-center gap-1 text-slate-500 text-sm mt-2">
+            <Activity size={14} /> Live average
           </div>
         </div>
 
@@ -1045,8 +1566,8 @@ const AnalyticsView = ({ payments, users, stats }: { payments: Payment[]; users:
             <span className="text-sm font-medium text-slate-600">Completed Orders</span>
           </div>
           <div className="text-3xl font-black text-slate-900">{payments.filter(p => p.status === 'completed').length}</div>
-          <div className="flex items-center gap-1 text-emerald-600 text-sm mt-2">
-            <TrendingUp size={14} /> +15 this week
+          <div className="flex items-center gap-1 text-slate-500 text-sm mt-2">
+            <Activity size={14} /> Live count
           </div>
         </div>
 
@@ -1057,9 +1578,9 @@ const AnalyticsView = ({ payments, users, stats }: { payments: Payment[]; users:
             </div>
             <span className="text-sm font-medium text-slate-600">Churn Rate</span>
           </div>
-          <div className="text-3xl font-black text-slate-900">2.3%</div>
-          <div className="flex items-center gap-1 text-red-600 text-sm mt-2">
-            <TrendingDown size={14} /> -0.5% from last month
+          <div className="text-3xl font-black text-slate-900">{churnRate.toFixed(1)}%</div>
+          <div className="flex items-center gap-1 text-slate-500 text-sm mt-2">
+            <Activity size={14} /> Live churn
           </div>
         </div>
       </div>
@@ -1205,7 +1726,18 @@ const SettingsView = ({ admin, store }: { admin: AdminUser; store: ReturnType<ty
 };
 
 // Invoices View
-const InvoicesView = ({ invoices, searchQuery }: { invoices: Invoice[]; searchQuery: string }) => {
+const InvoicesView = ({
+  invoices,
+  searchQuery,
+  onDownloadInvoice,
+}: {
+  invoices: Invoice[];
+  searchQuery: string;
+  onDownloadInvoice: (invoice: Invoice) => Promise<void>;
+}) => {
+  const [selectedInvoice, setSelectedInvoice] = useState<Invoice | null>(null);
+  const [downloadingInvoiceId, setDownloadingInvoiceId] = useState<string | null>(null);
+
   const filteredInvoices = invoices.filter(invoice => 
     invoice.invoiceNumber.toLowerCase().includes(searchQuery.toLowerCase()) ||
     invoice.userName.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -1214,6 +1746,17 @@ const InvoicesView = ({ invoices, searchQuery }: { invoices: Invoice[]; searchQu
 
   const totalPaid = invoices.filter(i => i.status === 'paid').reduce((sum, i) => sum + i.total, 0);
   const totalPending = invoices.filter(i => i.status === 'pending').reduce((sum, i) => sum + i.total, 0);
+
+  const handleDownload = async (invoice: Invoice) => {
+    setDownloadingInvoiceId(invoice.id);
+    try {
+      await onDownloadInvoice(invoice);
+    } catch {
+      window.alert('Unable to download invoice PDF right now. Please try again.');
+    } finally {
+      setDownloadingInvoiceId(null);
+    }
+  };
 
   return (
     <div className="space-y-6">
@@ -1245,6 +1788,14 @@ const InvoicesView = ({ invoices, searchQuery }: { invoices: Invoice[]; searchQu
           </div>
           <div className="text-2xl font-black text-orange-700">₹{totalPending.toLocaleString()}</div>
           <div className="text-xs text-orange-600">Pending Amount</div>
+        </div>
+      </div>
+
+      <div className="bg-blue-50 border border-blue-100 rounded-2xl p-4">
+        <p className="text-xs font-bold text-blue-700 uppercase tracking-wider mb-2">Invoice Contact</p>
+        <div className="text-sm text-blue-900 space-y-1">
+          <p><span className="font-semibold">Global Support:</span> {GLOBAL_SUPPORT_PHONE}</p>
+          <p><span className="font-semibold">Email Inquiry:</span> {GLOBAL_SUPPORT_EMAIL}</p>
         </div>
       </div>
 
@@ -1293,10 +1844,22 @@ const InvoicesView = ({ invoices, searchQuery }: { invoices: Invoice[]; searchQu
                 </Badge>
               </div>
               <div className="col-span-1 flex justify-end gap-1">
-                <Button variant="ghost" size="icon" className="size-8">
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="size-8"
+                  onClick={() => setSelectedInvoice(invoice)}
+                >
                   <Eye size={14} />
                 </Button>
-                <Button variant="ghost" size="icon" className="size-8">
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="size-8"
+                  onClick={() => {
+                    void handleDownload(invoice);
+                  }}
+                >
                   <Download size={14} />
                 </Button>
               </div>
@@ -1304,6 +1867,87 @@ const InvoicesView = ({ invoices, searchQuery }: { invoices: Invoice[]; searchQu
           ))
         )}
       </div>
+
+      <Modal isOpen={Boolean(selectedInvoice)} onClose={() => setSelectedInvoice(null)} title="Invoice Details" size="lg">
+        {selectedInvoice && (
+          <div className="space-y-6">
+            <div className="flex justify-between items-start border-b border-slate-200 pb-5">
+              <div>
+                <img src={INVOICE_LOGO_PATH} alt="Volosist" className="h-12 w-auto object-contain mb-2" />
+                <p className="text-sm text-slate-500">Global Support: {GLOBAL_SUPPORT_PHONE}</p>
+                <p className="text-sm text-slate-500">Email Inquiry: {GLOBAL_SUPPORT_EMAIL}</p>
+              </div>
+              <div className="text-right">
+                <h3 className="text-xl font-black text-slate-900">INVOICE</h3>
+                <p className="text-sm text-slate-500 mt-1">{selectedInvoice.invoiceNumber}</p>
+                <p className="text-xs text-slate-400 mt-1">Date: {new Date(selectedInvoice.date).toLocaleDateString()}</p>
+                <p className="text-xs text-slate-400">Due: {new Date(selectedInvoice.dueDate).toLocaleDateString()}</p>
+              </div>
+            </div>
+
+            <div className="bg-slate-50 rounded-xl p-4">
+              <p className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">Bill To</p>
+              <p className="font-bold text-slate-900">{selectedInvoice.customerInfo.name}</p>
+              <p className="text-sm text-slate-600">{selectedInvoice.customerInfo.company}</p>
+              <p className="text-sm text-slate-500">{selectedInvoice.customerInfo.email}</p>
+              <p className="text-sm text-slate-500">{selectedInvoice.customerInfo.address}</p>
+              {selectedInvoice.customerInfo.gst && (
+                <p className="text-sm text-slate-500">GST: {selectedInvoice.customerInfo.gst}</p>
+              )}
+            </div>
+
+            <div className="border border-slate-200 rounded-xl overflow-hidden">
+              <div className="grid grid-cols-12 gap-3 p-3 bg-slate-50 text-xs font-bold text-slate-400 uppercase tracking-wider">
+                <div className="col-span-5">Service</div>
+                <div className="col-span-2 text-center">Qty</div>
+                <div className="col-span-2 text-right">Unit</div>
+                <div className="col-span-3 text-right">Amount</div>
+              </div>
+              {selectedInvoice.items.map((item, index) => (
+                <div key={`${selectedInvoice.id}-item-${index}`} className="grid grid-cols-12 gap-3 p-3 border-t border-slate-100 text-sm">
+                  <div className="col-span-5">
+                    <p className="font-medium text-slate-900">{item.name}</p>
+                    <p className="text-xs text-slate-500">{item.plan}</p>
+                  </div>
+                  <div className="col-span-2 text-center text-slate-600">{item.quantity}</div>
+                  <div className="col-span-2 text-right text-slate-600">₹{item.unitPrice.toFixed(2)}</div>
+                  <div className="col-span-3 text-right font-bold text-slate-900">₹{item.total.toFixed(2)}</div>
+                </div>
+              ))}
+            </div>
+
+            <div className="flex justify-end">
+              <div className="w-72 space-y-2">
+                <div className="flex justify-between text-sm">
+                  <span className="text-slate-500">Subtotal</span>
+                  <span className="font-medium">₹{selectedInvoice.subtotal.toFixed(2)}</span>
+                </div>
+                <div className="flex justify-between text-sm">
+                  <span className="text-slate-500">GST (18%)</span>
+                  <span className="font-medium">₹{selectedInvoice.tax.toFixed(2)}</span>
+                </div>
+                <div className="flex justify-between text-lg font-bold border-t border-slate-200 pt-2">
+                  <span>Total</span>
+                  <span>₹{selectedInvoice.total.toFixed(2)}</span>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex gap-3 pt-4 border-t border-slate-200">
+              <Button variant="outline" className="flex-1" onClick={() => setSelectedInvoice(null)}>Close</Button>
+              <Button
+                className="flex-1 gap-2"
+                loading={downloadingInvoiceId === selectedInvoice.id}
+                onClick={async () => {
+                  await handleDownload(selectedInvoice);
+                }}
+              >
+                <Download size={16} /> Download PDF
+              </Button>
+            </div>
+          </div>
+        )}
+      </Modal>
     </div>
   );
 };
@@ -1372,6 +2016,322 @@ const ActivityLogView = ({ activityLog, users }: { activityLog: ActivityLog[]; u
           )}
         </div>
       </div>
+    </div>
+  );
+};
+
+// ─── Careers View ─────────────────────────────────────────────────────────────
+import { supabase } from '../../lib/supabase';
+
+interface JobPosition {
+  id: string;
+  title: string;
+  department: string;
+  location: string;
+  type: string;
+  short_description: string;
+  description: string;
+  is_active: boolean;
+  created_at: string;
+}
+
+const EMPTY_FORM: Omit<JobPosition, 'id' | 'created_at'> = {
+  title: '',
+  department: '',
+  location: 'Remote',
+  type: 'Full-time',
+  short_description: '',
+  description: '',
+  is_active: true,
+};
+
+const CareersView = () => {
+  const LOCAL_JOB_POSITIONS_KEY = 'volosist_job_positions';
+  const [positions, setPositions] = useState<JobPosition[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [showForm, setShowForm] = useState(false);
+  const [editId, setEditId] = useState<string | null>(null);
+  const [form, setForm] = useState({ ...EMPTY_FORM });
+  const [error, setError] = useState('');
+
+  const readLocalPositions = (): JobPosition[] => {
+    if (typeof window === 'undefined') return [];
+    try {
+      const raw = window.localStorage.getItem(LOCAL_JOB_POSITIONS_KEY);
+      return raw ? JSON.parse(raw) : [];
+    } catch {
+      return [];
+    }
+  };
+
+  const writeLocalPositions = (nextPositions: JobPosition[]) => {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem(LOCAL_JOB_POSITIONS_KEY, JSON.stringify(nextPositions));
+  };
+
+  const fetchPositions = async () => {
+    setLoading(true);
+    try {
+      const { data, error: fetchError } = await supabase
+        .from('job_positions')
+        .select('*')
+        .order('created_at', { ascending: false });
+
+      if (fetchError) throw fetchError;
+
+      const remotePositions = (data ?? []) as JobPosition[];
+      setPositions(remotePositions);
+      writeLocalPositions(remotePositions);
+      setError('');
+    } catch {
+      const localPositions = readLocalPositions();
+      setPositions(localPositions);
+      setError('Supabase connection failed. Showing locally saved job positions.');
+    }
+    setLoading(false);
+  };
+
+  useEffect(() => { fetchPositions(); }, []);
+
+  const openNew = () => {
+    setForm({ ...EMPTY_FORM });
+    setEditId(null);
+    setError('');
+    setShowForm(true);
+  };
+
+  const openEdit = (p: JobPosition) => {
+    setForm({
+      title: p.title,
+      department: p.department,
+      location: p.location,
+      type: p.type,
+      short_description: p.short_description,
+      description: p.description,
+      is_active: p.is_active,
+    });
+    setEditId(p.id);
+    setError('');
+    setShowForm(true);
+  };
+
+  const handleSave = async () => {
+    if (!form.title.trim() || !form.department.trim() || !form.short_description.trim() || !form.description.trim()) {
+      setError('Please fill in all required fields.');
+      return;
+    }
+    setSaving(true);
+    setError('');
+    let saveError: string | null = null;
+    if (editId) {
+      const { error: err } = await supabase.from('job_positions').update({ ...form, updated_at: new Date().toISOString() }).eq('id', editId);
+      if (err) saveError = err.message;
+    } else {
+      const { error: err } = await supabase.from('job_positions').insert([form]);
+      if (err) saveError = err.message;
+    }
+
+    if (saveError) {
+      const localPositions = readLocalPositions();
+
+      if (editId) {
+        const updatedPositions = localPositions.map((position) =>
+          position.id === editId
+            ? { ...position, ...form, updated_at: new Date().toISOString() }
+            : position
+        );
+        writeLocalPositions(updatedPositions);
+      } else {
+        const newPosition: JobPosition = {
+          id: crypto.randomUUID(),
+          ...form,
+          created_at: new Date().toISOString(),
+        };
+        writeLocalPositions([newPosition, ...localPositions]);
+      }
+
+      setShowForm(false);
+      await fetchPositions();
+      setSaving(false);
+      setError('Saved locally because Supabase is not reachable. Configure DB to sync online.');
+      return;
+    }
+
+    setSaving(false);
+
+    setShowForm(false);
+    fetchPositions();
+  };
+
+  const handleDelete = async (id: string) => {
+    if (!window.confirm('Delete this position?')) return;
+    const { error: deleteError } = await supabase.from('job_positions').delete().eq('id', id);
+    if (deleteError) {
+      const localPositions = readLocalPositions().filter((position) => position.id !== id);
+      writeLocalPositions(localPositions);
+      setError('Deleted locally because Supabase is not reachable.');
+    }
+    fetchPositions();
+  };
+
+  const toggleActive = async (p: JobPosition) => {
+    const { error: toggleError } = await supabase.from('job_positions').update({ is_active: !p.is_active }).eq('id', p.id);
+    if (toggleError) {
+      const localPositions = readLocalPositions().map((position) =>
+        position.id === p.id ? { ...position, is_active: !position.is_active } : position
+      );
+      writeLocalPositions(localPositions);
+      setError('Status updated locally because Supabase is not reachable.');
+    }
+    fetchPositions();
+  };
+
+  return (
+    <div className="space-y-6">
+      {/* Header row */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-xl font-bold text-slate-900">Job Positions</h2>
+          <p className="text-sm text-slate-500 mt-0.5">{positions.filter(p => p.is_active).length} active opening{positions.filter(p => p.is_active).length !== 1 ? 's' : ''}</p>
+        </div>
+        <Button onClick={openNew} className="gap-2 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl">
+          <Plus size={16} /> Post New Position
+        </Button>
+      </div>
+
+      {/* Form panel */}
+      {showForm && (
+        <motion.div
+          initial={{ opacity: 0, y: -10 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="bg-white rounded-2xl border border-slate-200 p-6 shadow-lg"
+        >
+          <div className="flex items-center justify-between mb-6">
+            <h3 className="font-bold text-slate-900 text-lg">{editId ? 'Edit Position' : 'New Position'}</h3>
+            <button onClick={() => setShowForm(false)} className="p-2 hover:bg-slate-100 rounded-lg">
+              <X size={18} className="text-slate-400" />
+            </button>
+          </div>
+
+          <div className="grid grid-cols-2 gap-4 mb-4">
+            <div>
+              <label className="text-xs font-bold text-slate-500 uppercase tracking-widest mb-1.5 block">Job Title *</label>
+              <Input value={form.title} onChange={e => setForm(f => ({ ...f, title: e.target.value }))} placeholder="e.g. AI/ML Engineer" className="rounded-xl" />
+            </div>
+            <div>
+              <label className="text-xs font-bold text-slate-500 uppercase tracking-widest mb-1.5 block">Department *</label>
+              <Input value={form.department} onChange={e => setForm(f => ({ ...f, department: e.target.value }))} placeholder="e.g. Engineering" className="rounded-xl" />
+            </div>
+            <div>
+              <label className="text-xs font-bold text-slate-500 uppercase tracking-widest mb-1.5 block">Location</label>
+              <Input value={form.location} onChange={e => setForm(f => ({ ...f, location: e.target.value }))} placeholder="Remote / Badlapur" className="rounded-xl" />
+            </div>
+            <div>
+              <label className="text-xs font-bold text-slate-500 uppercase tracking-widest mb-1.5 block">Employment Type</label>
+              <select
+                value={form.type}
+                onChange={e => setForm(f => ({ ...f, type: e.target.value }))}
+                className="w-full h-10 px-3 rounded-xl border border-slate-200 text-sm bg-white text-slate-900"
+              >
+                <option>Full-time</option>
+                <option>Part-time</option>
+                <option>Contract</option>
+                <option>Internship</option>
+              </select>
+            </div>
+          </div>
+
+          <div className="mb-4">
+            <label className="text-xs font-bold text-slate-500 uppercase tracking-widest mb-1.5 block">Short Description * <span className="normal-case text-slate-400 font-normal">(shown as subtitle on card)</span></label>
+            <Input value={form.short_description} onChange={e => setForm(f => ({ ...f, short_description: e.target.value }))} placeholder="One-line summary of the role" className="rounded-xl" />
+          </div>
+
+          <div className="mb-4">
+            <label className="text-xs font-bold text-slate-500 uppercase tracking-widest mb-1.5 block">Full Description * <span className="normal-case text-slate-400 font-normal">(responsibilities, requirements)</span></label>
+            <textarea
+              value={form.description}
+              onChange={e => setForm(f => ({ ...f, description: e.target.value }))}
+              placeholder="Describe the role, responsibilities, and requirements..."
+              rows={5}
+              className="w-full px-3 py-2.5 rounded-xl border border-slate-200 text-sm bg-white text-slate-900 resize-none focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+          </div>
+
+          <div className="flex items-center gap-3 mb-5">
+            <button onClick={() => setForm(f => ({ ...f, is_active: !f.is_active }))} className="flex items-center gap-2 text-sm font-medium text-slate-700">
+              {form.is_active
+                ? <ToggleRight size={22} className="text-emerald-500" />
+                : <ToggleLeft size={22} className="text-slate-400" />}
+              {form.is_active ? 'Active — visible on website' : 'Inactive — hidden from website'}
+            </button>
+          </div>
+
+          {error && <p className="text-red-500 text-sm mb-4">{error}</p>}
+
+          <div className="flex gap-3 justify-end">
+            <Button variant="outline" onClick={() => setShowForm(false)} className="rounded-xl">Cancel</Button>
+            <Button onClick={handleSave} disabled={saving} className="gap-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl">
+              {saving ? <Loader2 size={15} className="animate-spin" /> : <CheckCircle size={15} />}
+              {saving ? 'Saving…' : editId ? 'Save Changes' : 'Post Position'}
+            </Button>
+          </div>
+        </motion.div>
+      )}
+
+      {/* Positions list */}
+      {loading ? (
+        <div className="flex items-center justify-center py-20">
+          <Loader2 size={32} className="animate-spin text-blue-600" />
+        </div>
+      ) : positions.length === 0 ? (
+        <div className="bg-white rounded-2xl border border-slate-200 p-16 text-center">
+          <Briefcase size={48} className="text-slate-200 mx-auto mb-4" />
+          <p className="font-bold text-slate-500">No positions yet</p>
+          <p className="text-slate-400 text-sm mt-1">Click "Post New Position" to add your first job opening.</p>
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {positions.map((p) => (
+            <div key={p.id} className="bg-white rounded-2xl border border-slate-200 p-5 flex items-start gap-4 hover:shadow-md transition-shadow">
+              <div className={cn("size-11 rounded-xl flex items-center justify-center shrink-0", p.is_active ? 'bg-emerald-100' : 'bg-slate-100')}>
+                <Briefcase size={20} className={p.is_active ? 'text-emerald-600' : 'text-slate-400'} />
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-3 mb-0.5">
+                  <h4 className="font-bold text-slate-900">{p.title}</h4>
+                  <Badge className={cn('text-[10px] px-2', p.is_active ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-500')}>
+                    {p.is_active ? 'Active' : 'Inactive'}
+                  </Badge>
+                </div>
+                <p className="text-xs text-blue-600 font-medium mb-1">{p.department} · {p.location} · {p.type}</p>
+                <p className="text-sm text-slate-600 truncate">{p.short_description}</p>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  onClick={() => toggleActive(p)}
+                  title={p.is_active ? 'Deactivate' : 'Activate'}
+                  className="size-9 rounded-xl hover:bg-slate-100 flex items-center justify-center transition-colors"
+                >
+                  {p.is_active ? <ToggleRight size={18} className="text-emerald-500" /> : <ToggleLeft size={18} className="text-slate-400" />}
+                </button>
+                <button
+                  onClick={() => openEdit(p)}
+                  className="size-9 rounded-xl hover:bg-blue-50 flex items-center justify-center transition-colors"
+                >
+                  <Edit size={16} className="text-blue-600" />
+                </button>
+                <button
+                  onClick={() => handleDelete(p.id)}
+                  className="size-9 rounded-xl hover:bg-red-50 flex items-center justify-center transition-colors"
+                >
+                  <Trash2 size={16} className="text-red-500" />
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 };

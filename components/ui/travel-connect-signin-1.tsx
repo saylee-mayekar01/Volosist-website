@@ -1,6 +1,6 @@
 
 import React, { useRef, useEffect, useState } from "react";
-import { Eye, EyeOff, ArrowRight, ArrowLeft, Lock, Mail } from "lucide-react";
+import { ArrowLeft, Lock, Mail } from "lucide-react";
 import { motion } from "framer-motion";
 import { Button } from "./button";
 import { Input } from "./input";
@@ -83,23 +83,21 @@ export function SignInPage({ onSignInSuccess, onGoToSignUp, onBack }: { onSignIn
     setLoading(true);
     setError(null);
 
-    // Auth temporarily bypassed for development
-    // TODO: Restore Supabase auth when credentials are renewed
-    // const { error: authError } = await supabase.auth.signInWithPassword({
-    //   email,
-    //   password,
-    // });
-    // if (authError) {
-    //   setError(authError.message);
-    //   setLoading(false);
-    // } else {
-    //   onSignInSuccess();
-    // }
-    
-    // Bypass - go directly to dashboard
+    const { error: authError } = await supabase.auth.signInWithPassword({
+      email,
+      password,
+    });
+
+    if (authError) {
+      setError(authError.message);
+      setLoading(false);
+      return;
+    }
+
+    setLoading(false);
     setTimeout(() => {
       onSignInSuccess();
-    }, 500);
+    }, 250);
   };
 
   return (

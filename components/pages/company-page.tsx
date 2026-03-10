@@ -1,7 +1,7 @@
-import React from "react";
+import React, { useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import { useNavigate } from "react-router-dom";
-import { 
+import {
   Target,
   Lightbulb,
   Rocket,
@@ -18,10 +18,13 @@ import {
   Building2,
   Zap,
   Shield,
-  Heart
+  Heart,
+  Phone,
+  ExternalLink
 } from "lucide-react";
 import { Button } from "../ui/button";
 import { Badge } from "../ui/badge";
+import { supabase } from "../../lib/supabase";
 
 const fadeUpVariants = {
   hidden: { opacity: 0, y: 30 },
@@ -42,72 +45,155 @@ function AboutUsSection() {
   ];
 
   return (
-    <section className="py-20 bg-gradient-to-b from-slate-900 to-slate-800 relative overflow-hidden">
-      <div className="absolute inset-0 bg-[url('data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNjAiIGhlaWdodD0iNjAiIHZpZXdCb3g9IjAgMCA2MCA2MCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48ZyBmaWxsPSJub25lIiBmaWxsLXJ1bGU9ImV2ZW5vZGQiPjxwYXRoIGQ9Ik0wIDBoNjB2NjBIMHoiLz48cGF0aCBkPSJNMzAgMzBtLTEgMGExIDEgMCAxIDAgMiAwYTEgMSAwIDEgMCAtMiAwIiBmaWxsPSJyZ2JhKDI1NSwyNTUsMjU1LDAuMDMpIi8+PC9nPjwvc3ZnPg==')] opacity-50" />
+    <section className="py-20 md:py-32 bg-white relative overflow-hidden">
       <div className="container mx-auto px-6 relative z-10">
-        <div className="grid lg:grid-cols-2 gap-16 items-center mb-20">
+        <div className="grid lg:grid-cols-2 gap-12 lg:gap-20 items-center">
           {/* Left Content */}
           <motion.div
-            initial="hidden"
-            whileInView="visible"
+            initial={{ opacity: 0, x: -30 }}
+            whileInView={{ opacity: 1, x: 0 }}
             viewport={{ once: true, margin: "-100px" }}
+            transition={{ duration: 0.6 }}
           >
-            <motion.div variants={fadeUpVariants} custom={0}>
-              <Badge className="bg-blue-600 text-white border-0 px-4 py-1.5 text-[10px] font-black tracking-widest uppercase mb-6">
+            <motion.div
+              initial={{ opacity: 0 }}
+              whileInView={{ opacity: 1 }}
+              viewport={{ once: true, margin: "-100px" }}
+              transition={{ duration: 0.6, delay: 0.1 }}
+              className="mb-6"
+            >
+              <Badge className="bg-blue-600 text-white border-0 px-4 py-1.5 text-[10px] font-black tracking-widest uppercase">
                 About Us
               </Badge>
             </motion.div>
-            <motion.h2 
-              variants={fadeUpVariants} 
-              custom={1}
-              className="text-4xl md:text-5xl font-black tracking-tight mb-6 text-white"
+
+            <motion.h2
+              initial={{ opacity: 0, y: 20 }}
+              whileInView={{ opacity: 1, y: 0 }}
+              viewport={{ once: true, margin: "-100px" }}
+              transition={{ duration: 0.6, delay: 0.2 }}
+              className="text-4xl md:text-5xl lg:text-6xl font-black tracking-tight mb-6 text-slate-900 leading-[1.1]"
             >
               Empowering Businesses<br />
-              <span className="text-blue-400">Through AI</span>
+              <span className="text-blue-600">Through AI</span>
             </motion.h2>
-            <motion.p 
-              variants={fadeUpVariants} 
-              custom={2}
-              className="text-lg text-slate-400 mb-6"
+
+            <motion.p
+              initial={{ opacity: 0, y: 20 }}
+              whileInView={{ opacity: 1, y: 0 }}
+              viewport={{ once: true, margin: "-100px" }}
+              transition={{ duration: 0.6, delay: 0.3 }}
+              className="text-lg text-slate-600 mb-6 leading-relaxed"
             >
               We are a team of AI automation specialists and software engineers dedicated to helping B2B companies scale their operations through intelligent automation.
             </motion.p>
-            <motion.p 
-              variants={fadeUpVariants} 
-              custom={3}
-              className="text-slate-400"
+
+            <motion.p
+              initial={{ opacity: 0, y: 20 }}
+              whileInView={{ opacity: 1, y: 0 }}
+              viewport={{ once: true, margin: "-100px" }}
+              transition={{ duration: 0.6, delay: 0.4 }}
+              className="text-slate-600 mb-8 leading-relaxed"
             >
               From sales and lead generation to voice automation and complete business solutions, we deliver measurable results that transform how businesses operate.
             </motion.p>
+
+            <motion.div
+              initial={{ opacity: 0, y: 20 }}
+              whileInView={{ opacity: 1, y: 0 }}
+              viewport={{ once: true, margin: "-100px" }}
+              transition={{ duration: 0.6, delay: 0.5 }}
+              className="flex flex-col sm:flex-row gap-4 mb-12"
+            >
+              <Button
+                asChild
+                className="h-12 px-8 bg-slate-900 hover:bg-slate-800 text-white font-bold uppercase tracking-widest rounded-full text-sm"
+              >
+                <a href="mailto:volosist.ai@gmail.com">Contact Us</a>
+              </Button>
+            </motion.div>
+
+            {/* Stats */}
+            <motion.div
+              initial={{ opacity: 0 }}
+              whileInView={{ opacity: 1 }}
+              viewport={{ once: true, margin: "-100px" }}
+              transition={{ duration: 0.6, delay: 0.6 }}
+              className="grid grid-cols-2 gap-6 pt-8 border-t border-slate-200"
+            >
+              {[
+                { value: "150+", label: "Clients Served" },
+                { value: "1M+", label: "Leads Managed" },
+              ].map((stat, idx) => (
+                <div key={idx}>
+                  <div className="text-3xl font-black text-blue-600">{stat.value}</div>
+                  <div className="text-sm text-slate-600 uppercase tracking-wider">{stat.label}</div>
+                </div>
+              ))}
+            </motion.div>
           </motion.div>
 
-          {/* Right - Stats */}
+          {/* Right - Image */}
           <motion.div
-            initial="hidden"
-            whileInView="visible"
+            initial={{ opacity: 0, x: 30 }}
+            whileInView={{ opacity: 1, x: 0 }}
             viewport={{ once: true, margin: "-100px" }}
-            className="grid grid-cols-2 gap-6"
+            transition={{ duration: 0.6 }}
+            className="relative h-[400px] md:h-[500px] rounded-3xl overflow-hidden shadow-2xl"
           >
-            {[
-              { value: "500+", label: "Clients Served" },
-              { value: "50M+", label: "Leads Generated" },
-              { value: "99.9%", label: "Uptime" },
-              { value: "24/7", label: "Support" },
-            ].map((stat, idx) => (
-              <motion.div
-                key={idx}
-                variants={fadeUpVariants}
-                custom={idx * 0.3}
-                className="p-8 rounded-2xl bg-white/5 backdrop-blur-sm border border-white/10 text-center"
-              >
-                <div className="text-4xl font-black text-blue-400 mb-2">{stat.value}</div>
-                <div className="text-sm font-medium text-slate-400">{stat.label}</div>
-              </motion.div>
-            ))}
+            <img
+              src="https://images.unsplash.com/photo-1552664730-d307ca884978?auto=format&fit=crop&q=80&w=800"
+              alt="Volosist Team"
+              className="w-full h-full object-cover"
+            />
+            <div className="absolute inset-0 bg-gradient-to-t from-black/30 via-transparent to-transparent" />
           </motion.div>
         </div>
+      </div>
+    </section>
+  );
+}
 
-        {/* Values */}
+// Section 1.5: Values & Stats Section
+function ValuesSection() {
+  const values = [
+    { icon: <Lightbulb className="size-6" />, title: "Innovation First", desc: "We push boundaries with cutting-edge AI solutions" },
+    { icon: <Shield className="size-6" />, title: "Trust & Reliability", desc: "Your data and success are our top priorities" },
+    { icon: <Zap className="size-6" />, title: "Speed to Value", desc: "Rapid deployment with measurable results" },
+    { icon: <Heart className="size-6" />, title: "Client-Centric", desc: "Your growth is the measure of our success" },
+  ];
+
+  return (
+    <section className="py-20 md:py-28 bg-gradient-to-b from-slate-900 to-slate-800 relative overflow-hidden">
+      <div className="absolute inset-0 bg-[url('data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNjAiIGhlaWdodD0iNjAiIHZpZXdCb3g9IjAgMCA2MCA2MCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48ZyBmaWxsPSJub25lIiBmaWxsLXJ1bGU9ImV2ZW5vZGQiPjxwYXRoIGQ9Ik0wIDBoNjB2NjBIMHoiLz48cGF0aCBkPSJNMzAgMzBtLTEgMGExIDEgMCAxIDAgMiAwYTEgMSAwIDEgMCAtMiAwIiBmaWxsPSJyZ2JhKDI1NSwyNTUsMjU1LDAuMDMpIi8+PC9nPjwvc3ZnPg==')] opacity-50" />
+      
+      <div className="container mx-auto px-6 relative z-10">
+        {/* Top Stats Grid */}
+        <motion.div
+          initial="hidden"
+          whileInView="visible"
+          viewport={{ once: true, margin: "-100px" }}
+          className="grid md:grid-cols-2 lg:grid-cols-4 gap-6 mb-20"
+        >
+          {[
+            { value: "500+", label: "Clients Served" },
+            { value: "50M+", label: "Leads Generated" },
+            { value: "99.9%", label: "Uptime" },
+            { value: "24/7", label: "Support" },
+          ].map((stat, idx) => (
+            <motion.div
+              key={idx}
+              variants={fadeUpVariants}
+              custom={idx * 0.2}
+              className="p-6 rounded-2xl bg-slate-800/50 backdrop-blur-sm border border-slate-700/50 text-center hover:border-blue-500/50 transition-all"
+            >
+              <div className="text-3xl md:text-4xl font-black text-blue-400 mb-2">{stat.value}</div>
+              <div className="text-sm font-medium text-slate-400 uppercase tracking-wider">{stat.label}</div>
+            </motion.div>
+          ))}
+        </motion.div>
+
+        {/* Values Grid */}
         <motion.div
           initial="hidden"
           whileInView="visible"
@@ -119,13 +205,13 @@ function AboutUsSection() {
               key={idx}
               variants={fadeUpVariants}
               custom={idx * 0.2}
-              className="p-6 rounded-2xl bg-white/5 backdrop-blur-sm border border-white/10 text-center hover:bg-white/10 transition-colors"
+              className="p-8 rounded-2xl bg-slate-800/50 backdrop-blur-sm border border-slate-700/50 text-center hover:bg-slate-700/50 transition-all"
             >
-              <div className="size-14 rounded-xl bg-blue-600/20 flex items-center justify-center text-blue-400 mx-auto mb-4">
+              <div className="size-14 rounded-2xl bg-blue-600/20 flex items-center justify-center text-blue-400 mx-auto mb-4">
                 {value.icon}
               </div>
-              <h4 className="font-bold text-white mb-2">{value.title}</h4>
-              <p className="text-sm text-slate-400">{value.desc}</p>
+              <h4 className="font-bold text-white mb-2 text-lg">{value.title}</h4>
+              <p className="text-sm text-slate-400 leading-relaxed">{value.desc}</p>
             </motion.div>
           ))}
         </motion.div>
@@ -177,15 +263,15 @@ function OurProcessSection() {
               Our Process
             </Badge>
           </motion.div>
-          <motion.h2 
-            variants={fadeUpVariants} 
+          <motion.h2
+            variants={fadeUpVariants}
             custom={1}
             className="text-4xl md:text-5xl font-black tracking-tight mb-6 text-slate-900"
           >
             How We <span className="text-emerald-600">Work</span>
           </motion.h2>
-          <motion.p 
-            variants={fadeUpVariants} 
+          <motion.p
+            variants={fadeUpVariants}
             custom={2}
             className="text-lg text-slate-600 max-w-2xl mx-auto"
           >
@@ -296,15 +382,15 @@ function CaseStudiesSection() {
               Case Studies
             </Badge>
           </motion.div>
-          <motion.h2 
-            variants={fadeUpVariants} 
+          <motion.h2
+            variants={fadeUpVariants}
             custom={1}
             className="text-4xl md:text-5xl font-black tracking-tight mb-6 text-slate-900"
           >
             Real <span className="text-purple-600">Results</span>
           </motion.h2>
-          <motion.p 
-            variants={fadeUpVariants} 
+          <motion.p
+            variants={fadeUpVariants}
             custom={2}
             className="text-lg text-slate-600 max-w-2xl mx-auto"
           >
@@ -345,34 +431,112 @@ function CaseStudiesSection() {
 }
 
 // Section 4: Careers
+// ─── Address Section ────────────────────────────────────────────────────────
+function AddressSection() {
+  return (
+    <section className="py-20 bg-white relative overflow-hidden">
+      <div className="container mx-auto px-6">
+        <div className="grid lg:grid-cols-2 gap-12 items-stretch">
+          {/* Left – address card */}
+          <motion.div
+            initial={{ opacity: 0, x: -30 }}
+            whileInView={{ opacity: 1, x: 0 }}
+            viewport={{ once: true, margin: "-100px" }}
+            transition={{ duration: 0.6 }}
+            className="flex flex-col justify-center"
+          >
+            <Badge className="bg-blue-600 text-white border-0 px-4 py-1.5 text-[10px] font-black tracking-widest uppercase mb-6 w-fit">
+              Visit Us
+            </Badge>
+            <h2 className="text-4xl md:text-5xl font-black tracking-tight mb-6 text-slate-900 leading-[1.1]">
+              Visit Our <span className="text-blue-600">Innovation Studio</span>
+            </h2>
+
+            <p className="text-slate-600 mb-6 leading-relaxed">
+              Meet our AI automation consultants, discuss your transformation roadmap, and explore tailored enterprise automation strategies at our office.
+            </p>
+
+            <div className="space-y-5">
+              <div className="flex items-start gap-4 p-5 rounded-2xl bg-slate-50 border border-slate-100">
+                <div className="size-11 rounded-xl bg-blue-100 flex items-center justify-center text-blue-600 shrink-0">
+                  <MapPin className="size-5" />
+                </div>
+                <div>
+                  <p className="font-bold text-slate-900 mb-1">Address</p>
+                  <p className="text-slate-600 text-sm leading-relaxed">
+                    Statica The modern arts,<br />
+                    Badlapur (W), Thane,<br />
+                    Maharashtra 421503,<br />
+                    India
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex items-start gap-4 p-5 rounded-2xl bg-slate-50 border border-slate-100">
+                <div className="size-11 rounded-xl bg-blue-100 flex items-center justify-center text-blue-600 shrink-0">
+                  <Mail className="size-5" />
+                </div>
+                <div>
+                  <p className="font-bold text-slate-900 mb-1">Email</p>
+                  <a href="mailto:volosist.ai@gmail.com" className="text-blue-600 hover:underline text-sm">
+                    volosist.ai@gmail.com
+                  </a>
+                </div>
+              </div>
+
+              <a
+                href="https://www.google.com/maps/place/Statica+The+modern+arts/@19.1748121,73.2371486,17z"
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                <Button className="mt-2 h-11 px-6 rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs uppercase tracking-widest gap-2">
+                  <ExternalLink className="size-4" /> Open in Google Maps
+                </Button>
+              </a>
+            </div>
+          </motion.div>
+
+          {/* Right – embedded map */}
+          <motion.div
+            initial={{ opacity: 0, x: 30 }}
+            whileInView={{ opacity: 1, x: 0 }}
+            viewport={{ once: true, margin: "-100px" }}
+            transition={{ duration: 0.6, delay: 0.15 }}
+            className="rounded-2xl overflow-hidden shadow-xl border border-slate-200 min-h-[400px]"
+          >
+            <iframe
+              title="Volosist Office Location"
+              src="https://www.google.com/maps/embed?pb=!1m14!1m8!1m3!1d120590.93133013733!2d73.237149!3d19.174812!3m2!1i1024!2i768!4f13.1!3m3!1m2!1s0x3be793ccb7bfe09f%3A0x1d3e141fe42b59a5!2sStatica%20The%20modern%20arts!5e0!3m2!1sen!2sus!4v1771782096944!5m2!1sen!2sus"
+              width="100%"
+              height="100%"
+              style={{ minHeight: 400, border: 0 }}
+              allowFullScreen
+              loading="lazy"
+              referrerPolicy="no-referrer-when-downgrade"
+            />
+          </motion.div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+// ─── Careers Section ─────────────────────────────────────────────────────────
+interface JobPosition {
+  id: string;
+  title: string;
+  department: string;
+  location: string;
+  type: string;
+  short_description: string;
+  description: string;
+  is_active: boolean;
+}
+
 function CareersSection() {
-  const navigate = useNavigate();
-  const openPositions = [
-    {
-      title: "AI/ML Engineer",
-      department: "Engineering",
-      location: "Remote",
-      type: "Full-time",
-    },
-    {
-      title: "Sales Development Rep",
-      department: "Sales",
-      location: "Remote",
-      type: "Full-time",
-    },
-    {
-      title: "Customer Success Manager",
-      department: "Operations",
-      location: "Remote",
-      type: "Full-time",
-    },
-    {
-      title: "Full Stack Developer",
-      department: "Engineering",
-      location: "Remote",
-      type: "Full-time",
-    },
-  ];
+  const LOCAL_JOB_POSITIONS_KEY = 'volosist_job_positions';
+  const [positions, setPositions] = useState<JobPosition[]>([]);
+  const [loading, setLoading] = useState(true);
 
   const perks = [
     { icon: <MapPin className="size-5" />, title: "Remote First", desc: "Work from anywhere" },
@@ -381,11 +545,73 @@ function CareersSection() {
     { icon: <Award className="size-5" />, title: "Competitive Pay", desc: "Top market rates" },
   ];
 
+  useEffect(() => {
+    const readLocalPositions = (): JobPosition[] => {
+      if (typeof window === 'undefined') return [];
+      try {
+        const raw = window.localStorage.getItem(LOCAL_JOB_POSITIONS_KEY);
+        return raw ? JSON.parse(raw) : [];
+      } catch {
+        return [];
+      }
+    };
+
+    const fetchPositions = async () => {
+      try {
+        const { data, error } = await supabase
+          .from('job_positions')
+          .select('*')
+          .eq('is_active', true)
+          .order('created_at', { ascending: false });
+
+        if (error) throw error;
+
+        setPositions(data ?? []);
+      } catch (fetchError) {
+        console.error('[careers] Failed to fetch positions:', fetchError);
+        const localPositions = readLocalPositions().filter((position) => position.is_active);
+        setPositions(localPositions);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchPositions();
+
+    const channel = supabase
+      .channel('job_positions_live_updates')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'job_positions' },
+        fetchPositions
+      )
+      .subscribe();
+
+    const onStorageChange = (event: StorageEvent) => {
+      if (event.key === LOCAL_JOB_POSITIONS_KEY) {
+        fetchPositions();
+      }
+    };
+
+    window.addEventListener('storage', onStorageChange);
+
+    return () => {
+      supabase.removeChannel(channel);
+      window.removeEventListener('storage', onStorageChange);
+    };
+  }, []);
+
+  const handleApply = (title: string) => {
+    const subject = encodeURIComponent(`Application for ${title}`);
+    const body = encodeURIComponent(`Hi Volosist Team,\n\nI am interested in the ${title} position.\n\nPlease find my details below:\n\nName:\nPhone:\nLinkedIn/Portfolio:\n\nBest regards,`);
+    window.location.href = `mailto:volosist.ai@gmail.com?subject=${subject}&body=${body}`;
+  };
+
   return (
     <section className="py-20 bg-gradient-to-br from-orange-50 via-white to-amber-50 relative overflow-hidden">
       <div className="container mx-auto px-6">
         <div className="grid lg:grid-cols-2 gap-16 items-start">
-          {/* Left - Title & Perks */}
+          {/* Left – heading & perks */}
           <motion.div
             initial="hidden"
             whileInView="visible"
@@ -396,27 +622,22 @@ function CareersSection() {
                 Careers
               </Badge>
             </motion.div>
-            <motion.h2 
-              variants={fadeUpVariants} 
+            <motion.h2
+              variants={fadeUpVariants}
               custom={1}
               className="text-4xl md:text-5xl font-black tracking-tight mb-6 text-slate-900"
             >
               Join Our <span className="text-orange-600">Team</span>
             </motion.h2>
-            <motion.p 
-              variants={fadeUpVariants} 
+            <motion.p
+              variants={fadeUpVariants}
               custom={2}
               className="text-lg text-slate-600 mb-8"
             >
               We're always looking for talented individuals passionate about AI and automation. Join us in building the future of business automation.
             </motion.p>
 
-            {/* Perks Grid */}
-            <motion.div 
-              variants={fadeUpVariants} 
-              custom={3}
-              className="grid grid-cols-2 gap-4 mb-8"
-            >
+            <motion.div variants={fadeUpVariants} custom={3} className="grid grid-cols-2 gap-4">
               {perks.map((perk, idx) => (
                 <div key={idx} className="flex items-center gap-3 p-4 rounded-xl bg-white shadow-sm border border-orange-100">
                   <div className="size-10 rounded-lg bg-orange-100 flex items-center justify-center text-orange-600">
@@ -429,18 +650,9 @@ function CareersSection() {
                 </div>
               ))}
             </motion.div>
-
-            <motion.div variants={fadeUpVariants} custom={4}>
-              <Button 
-                onClick={() => navigate('/contact')}
-                className="h-12 px-8 rounded-lg bg-orange-600 hover:bg-orange-700 text-white font-bold uppercase tracking-widest text-[10px] gap-2"
-              >
-                <Mail className="size-4" /> Get In Touch
-              </Button>
-            </motion.div>
           </motion.div>
 
-          {/* Right - Open Positions */}
+          {/* Right – open positions */}
           <motion.div
             initial="hidden"
             whileInView="visible"
@@ -448,27 +660,60 @@ function CareersSection() {
             className="space-y-4"
           >
             <h3 className="text-sm font-black uppercase tracking-widest text-slate-400 mb-6">Open Positions</h3>
-            {openPositions.map((position, idx) => (
+
+            {loading && (
+              <div className="text-slate-400 text-sm py-8 text-center">Loading positions…</div>
+            )}
+
+            {!loading && positions.length === 0 && (
+              <div className="p-8 rounded-2xl bg-white border border-slate-100 text-center">
+                <Briefcase className="size-10 text-slate-300 mx-auto mb-3" />
+                <p className="text-slate-500 font-medium">No open positions right now.</p>
+                <p className="text-slate-400 text-sm mt-1">Check back soon or send us your resume!</p>
+                <Button
+                  onClick={() => handleApply('General Application')}
+                  className="mt-4 h-10 px-6 rounded-lg bg-orange-600 hover:bg-orange-700 text-white font-bold text-xs uppercase tracking-widest gap-2"
+                >
+                  <Mail className="size-3.5" /> Send Resume
+                </Button>
+              </div>
+            )}
+
+            {positions.map((position, idx) => (
               <motion.div
-                key={idx}
+                key={position.id}
                 variants={fadeUpVariants}
-                custom={idx * 0.2}
-                className="p-6 rounded-2xl bg-white shadow-lg border border-slate-100 hover:shadow-xl transition-shadow cursor-pointer group"
+                custom={idx * 0.15}
+                className="p-6 rounded-2xl bg-white shadow-lg border border-slate-100 hover:shadow-xl transition-shadow"
               >
-                <div className="flex items-start justify-between">
-                  <div>
-                    <h4 className="text-lg font-bold text-slate-900 group-hover:text-orange-600 transition-colors">{position.title}</h4>
-                    <p className="text-sm text-slate-500">{position.department}</p>
-                  </div>
-                  <ArrowRight className="size-5 text-slate-400 group-hover:text-orange-600 group-hover:translate-x-1 transition-all" />
+                {/* Header */}
+                <div className="mb-3">
+                  <h4 className="text-lg font-bold text-slate-900">{position.title}</h4>
+                  <p className="text-sm text-orange-600 font-medium">{position.department}</p>
                 </div>
-                <div className="flex items-center gap-4 mt-4">
-                  <span className="flex items-center gap-1 text-xs font-medium text-slate-500">
-                    <MapPin className="size-3" /> {position.location}
-                  </span>
-                  <span className="flex items-center gap-1 text-xs font-medium text-slate-500">
-                    <Clock className="size-3" /> {position.type}
-                  </span>
+
+                {/* Short description */}
+                <p className="text-sm text-slate-600 leading-relaxed mb-4">{position.short_description}</p>
+
+                {/* Full description */}
+                <p className="text-xs text-slate-500 leading-relaxed mb-5 border-t border-slate-100 pt-4">{position.description}</p>
+
+                {/* Meta + Apply */}
+                <div className="flex items-center justify-between flex-wrap gap-3">
+                  <div className="flex items-center gap-4">
+                    <span className="flex items-center gap-1 text-xs font-medium text-slate-500">
+                      <MapPin className="size-3" /> {position.location}
+                    </span>
+                    <span className="flex items-center gap-1 text-xs font-medium text-slate-500">
+                      <Clock className="size-3" /> {position.type}
+                    </span>
+                  </div>
+                  <Button
+                    onClick={() => handleApply(position.title)}
+                    className="h-9 px-5 rounded-lg bg-orange-600 hover:bg-orange-700 text-white font-bold text-xs uppercase tracking-widest gap-1.5"
+                  >
+                    <Mail className="size-3.5" /> Apply Now
+                  </Button>
                 </div>
               </motion.div>
             ))}
@@ -487,6 +732,7 @@ export function CompanyPage() {
       <OurProcessSection />
       <CaseStudiesSection />
       <CareersSection />
+      <AddressSection />
     </div>
   );
 }

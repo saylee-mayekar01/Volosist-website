@@ -54,12 +54,11 @@ const SERVICES: ServiceSection[] = [
     description:
       'In a world of manual processes, we design intelligent flows. Every automation is a decision to multiply your impact.',
     accentColor: 'blue',
-    bgColor: 'bg-gradient-to-br from-slate-50 via-blue-50/30 to-white',
+    bgColor: 'bg-gradient-to-br from-slate-100/80 via-blue-50/60 to-indigo-50/40',
     images: [
       'https://images.unsplash.com/photo-1639322537228-f710d846310a?w=600&q=80',
       'https://images.unsplash.com/photo-1551288049-bebda4e38f71?w=600&q=80',
       'https://images.unsplash.com/photo-1460925895917-afdab827c52f?w=600&q=80',
-      'https://images.unsplash.com/photo-1553877522-43269d4ea984?w=600&q=80',
     ],
     subServices: [
       { icon: <Mail className="size-4" />, title: 'Automated Follow-ups' },
@@ -80,12 +79,11 @@ const SERVICES: ServiceSection[] = [
     description:
       'In a world of silence, we design engagement. Every call is a bridge between you and your customer.',
     accentColor: 'emerald',
-    bgColor: 'bg-gradient-to-br from-slate-50 via-emerald-50/30 to-white',
+    bgColor: 'bg-gradient-to-br from-slate-100/80 via-teal-50/50 to-emerald-50/40',
     images: [
       'https://images.unsplash.com/photo-1558618666-fcd25c85cd64?w=600&q=80',
       'https://images.unsplash.com/photo-1573164713988-8665fc963095?w=600&q=80',
       'https://images.unsplash.com/photo-1516321318423-f06f85e504b3?w=600&q=80',
-      'https://images.unsplash.com/photo-1590650153855-d9e808231d41?w=600&q=80',
     ],
     subServices: [
       { icon: <Phone className="size-4" />, title: 'Inbound Call Handling' },
@@ -106,12 +104,11 @@ const SERVICES: ServiceSection[] = [
     description:
       'In a world of noise, we design clarity. Every message is crafted to cut through and connect.',
     accentColor: 'purple',
-    bgColor: 'bg-gradient-to-br from-slate-50 via-purple-50/30 to-white',
+    bgColor: 'bg-gradient-to-br from-slate-100/80 via-violet-50/50 to-purple-50/40',
     images: [
       'https://images.unsplash.com/photo-1626785774625-0c6f52c0d0b5?w=600&q=80',
       'https://images.unsplash.com/photo-1533750349088-cd871a92f312?w=600&q=80',
       'https://images.unsplash.com/photo-1557838923-2985c318be48?w=600&q=80',
-      'https://images.unsplash.com/photo-1432888622747-4eb9a8efeb07?w=600&q=80',
     ],
     subServices: [
       { icon: <Megaphone className="size-4" />, title: 'Social Media Automation' },
@@ -131,12 +128,11 @@ const SERVICES: ServiceSection[] = [
     description:
       'In a world of complexity, we design simplicity. Every system is built to empower your entire operation.',
     accentColor: 'amber',
-    bgColor: 'bg-gradient-to-br from-slate-50 via-amber-50/30 to-white',
+    bgColor: 'bg-gradient-to-br from-slate-100/80 via-amber-50/50 to-orange-50/40',
     images: [
       'https://images.unsplash.com/photo-1486406146926-c627a92ad1ab?w=600&q=80',
       'https://images.unsplash.com/photo-1497215728101-856f4ea42174?w=600&q=80',
       'https://images.unsplash.com/photo-1497366216548-37526070297c?w=600&q=80',
-      'https://images.unsplash.com/photo-1560472354-b33ff0c44a43?w=600&q=80',
     ],
     subServices: [
       { icon: <Building2 className="size-4" />, title: 'Custom AI Agents' },
@@ -181,106 +177,36 @@ const accentColors: Record<
 
 const HorizontalImageGallery: React.FC<{
   images: string[];
-  accentColor: string;
-  reverse?: boolean;
-}> = ({ images, accentColor, reverse }) => {
+}> = ({ images }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const { scrollYProgress } = useScroll({
     target: containerRef,
     offset: ['start end', 'end start'],
   });
 
-  const baseOffset = reverse ? 150 : -150;
-  const x1 = useTransform(scrollYProgress, [0, 1], [baseOffset, -baseOffset]);
-  const x2 = useTransform(scrollYProgress, [0, 1], [
-    -baseOffset * 0.7,
-    baseOffset * 0.7,
-  ]);
-  const x3 = useTransform(scrollYProgress, [0, 1], [
-    baseOffset * 0.9,
-    -baseOffset * 0.9,
-  ]);
-  const x4 = useTransform(scrollYProgress, [0, 1], [
-    -baseOffset * 0.5,
-    baseOffset * 0.5,
-  ]);
-
-  const colors = accentColors[accentColor];
+  const x = useTransform(scrollYProgress, [0, 1], [160, -160]);
 
   return (
     <motion.div
       ref={containerRef}
-      className="relative h-[600px] overflow-hidden rounded-3xl"
+      className="relative h-[320px] sm:h-[360px] lg:h-[420px] overflow-hidden rounded-3xl"
     >
-      <motion.div style={{ x: x1 }} className="absolute inset-0 w-full h-full">
-        <img
-          src={images[0]}
-          alt="Featured"
-          className="w-full h-full object-cover"
-        />
-        <div className="absolute inset-0 bg-gradient-to-t from-black/50 via-transparent to-transparent" />
-
-        <div className="absolute bottom-8 left-8 right-8 z-20">
+      <motion.div
+        style={{ x }}
+        className="absolute inset-0 flex items-center gap-6"
+      >
+        {images.slice(0, 1).map((src, idx) => (
           <div
-            className={cn(
-              "bg-black/40 backdrop-blur-md rounded-2xl p-5 border",
-              colors.border.replace('border-', 'border-').replace('200', '300/50')
-            )}
+            key={`${src}-${idx}`}
+            className="shrink-0 w-[500px] h-[350px] sm:w-[600px] sm:h-[400px] lg:w-[700px] lg:h-[450px] rounded-2xl overflow-hidden"
           >
-            <div
-              className={cn(
-                'text-xs uppercase tracking-widest mb-2 font-black',
-                colors.text
-              )}
-            >
-              Featured
-            </div>
-            <div className="text-white font-bold text-lg">
-              Intelligent Async Workflows
-            </div>
+            <img
+              src={src}
+              alt="Service"
+              className="w-full h-full object-cover"
+            />
           </div>
-        </div>
-      </motion.div>
-
-      <motion.div
-        style={{ x: x2 }}
-        className="absolute top-12 right-12 w-[35%] h-[40%] rounded-2xl overflow-hidden shadow-2xl z-30 border-2 border-white/20"
-      >
-        <img
-          src={images[1]}
-          alt="Service"
-          className="w-full h-full object-cover"
-        />
-      </motion.div>
-
-      <motion.div
-        style={{ x: x3 }}
-        className="absolute bottom-12 left-12 w-[40%] h-[35%] rounded-2xl overflow-hidden shadow-2xl z-20 border-2 border-white/10"
-      >
-        <img
-          src={images[2]}
-          alt="Service"
-          className="w-full h-full object-cover"
-        />
-      </motion.div>
-
-      <motion.div
-        style={{ x: x4 }}
-        className="absolute bottom-20 right-24 w-[25%] h-[25%] rounded-xl overflow-hidden shadow-lg z-40 border-2 border-white/30"
-      >
-        <img
-          src={images[3]}
-          alt="Service"
-          className="w-full h-full object-cover"
-        />
-        <div
-          className={cn(
-            'absolute inset-0 flex items-center justify-center bg-black/40',
-            `${colors.bg} bg-opacity-20`
-          )}
-        >
-          <Sparkles className="w-8 h-8 text-white" />
-        </div>
+        ))}
       </motion.div>
     </motion.div>
   );
@@ -427,11 +353,7 @@ const ServiceSectionComponent: React.FC<{
           </div>
 
           <div className={cn(isReverse && 'lg:col-start-1 lg:row-start-1')}>
-            <HorizontalImageGallery
-              images={service.images}
-              accentColor={service.accentColor}
-              reverse={isReverse}
-            />
+            <HorizontalImageGallery images={service.images} />
           </div>
         </motion.div>
       </div>
@@ -453,110 +375,9 @@ const ServiceSectionComponent: React.FC<{
   );
 };
 
-const CTASection: React.FC = () => {
-  const navigate = useNavigate();
-  const ref = useRef<HTMLElement>(null);
-  const { scrollYProgress } = useScroll({
-    target: ref,
-    offset: ['start end', 'end start'],
-  });
-  const y = useTransform(scrollYProgress, [0, 1], [40, -40]);
-
-  return (
-    <section ref={ref} className="py-24 bg-slate-900 relative overflow-hidden">
-      <div className="absolute inset-0">
-        <motion.div
-          style={{ y }}
-          className="absolute inset-0 bg-gradient-to-br from-blue-600/20 via-purple-600/20 to-emerald-600/20"
-        />
-        {[...Array(30)].map((_, i) => (
-          <motion.div
-            key={i}
-            className="absolute size-1 bg-white/30 rounded-full"
-            style={{
-              left: `${Math.random() * 100}%`,
-              top: `${Math.random() * 100}%`,
-            }}
-            animate={{
-              y: [0, -40, 0],
-              opacity: [0.1, 0.5, 0.1],
-            }}
-            transition={{
-              duration: 4 + Math.random() * 3,
-              repeat: Infinity,
-              delay: Math.random() * 3,
-            }}
-          />
-        ))}
-      </div>
-
-      <div className="container mx-auto px-6 relative z-10">
-        <motion.div
-          initial={{ opacity: 0, y: 40 }}
-          whileInView={{ opacity: 1, y: 0 }}
-          viewport={{ once: true }}
-          transition={{ duration: 0.8 }}
-          className="max-w-4xl mx-auto text-center"
-        >
-          <h2 className="text-4xl md:text-5xl lg:text-6xl font-black text-white mb-6">
-            Ready to{' '}
-            <span className="text-transparent bg-clip-text bg-gradient-to-r from-blue-400 via-purple-400 to-emerald-400">
-              Transform
-            </span>{' '}
-            Your Business?
-          </h2>
-          <p className="text-xl text-slate-400 mb-10 max-w-2xl mx-auto">
-            Join 500+ businesses already using our AI-powered automation to scale
-            their operations and accelerate growth.
-          </p>
-          <div className="flex flex-col sm:flex-row gap-4 justify-center">
-            <Button
-              size="lg"
-              onClick={() => navigate('/contact')}
-              className="h-14 px-10 rounded-full bg-white text-slate-900 hover:bg-slate-100 font-bold uppercase tracking-widest text-xs gap-2"
-            >
-              Start Free Trial <ArrowRight className="size-5" />
-            </Button>
-            <Button
-              size="lg"
-              variant="outline"
-              onClick={() => navigate('/contact')}
-              className="h-14 px-10 rounded-full border-white/30 text-white hover:bg-white/10 font-bold uppercase tracking-widest text-xs gap-2"
-            >
-              Schedule Demo <Play className="size-5" />
-            </Button>
-          </div>
-
-          <motion.div
-            initial={{ opacity: 0 }}
-            whileInView={{ opacity: 1 }}
-            viewport={{ once: true }}
-            transition={{ delay: 0.5 }}
-            className="mt-12 flex flex-wrap justify-center gap-8"
-          >
-            {[
-              { value: '500+', label: 'Active Clients' },
-              { value: '99.9%', label: 'Uptime SLA' },
-              { value: '10M+', label: 'Tasks Automated' },
-              { value: '4.9 Stars', label: 'Customer Rating' },
-            ].map((stat) => (
-              <div key={stat.label} className="text-center">
-                <div className="text-2xl font-black text-white">
-                  {stat.value}
-                </div>
-                <div className="text-sm text-slate-500">{stat.label}</div>
-              </div>
-            ))}
-          </motion.div>
-        </motion.div>
-      </div>
-    </section>
-  );
-};
-
 export function VerticalServicesParallax() {
   return (
-    <div className="bg-white">
+    <div className="bg-gradient-to-b from-slate-50 via-slate-100/50 to-blue-50/30">
       {SERVICES.map((service, index) => (
         <ServiceSectionComponent
           key={service.id}
@@ -564,7 +385,6 @@ export function VerticalServicesParallax() {
           index={index}
         />
       ))}
-      <CTASection />
     </div>
   );
 }

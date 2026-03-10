@@ -52,9 +52,9 @@ export const Casestudy5 = ({
   casestudies = defaultCasestudies,
 }: Casestudy5Props) => {
   return (
-    <section className="py-16 lg:py-20 relative">
+    <section className="py-16 lg:py-20 relative bg-gradient-to-br from-slate-50 via-blue-50/40 to-indigo-50/30">
       <div className="container mx-auto px-6">
-        <div className="border border-slate-200 rounded-2xl overflow-hidden shadow-sm">
+        <div className="border border-slate-200/80 rounded-2xl overflow-hidden shadow-md bg-gradient-to-br from-white via-slate-50/80 to-blue-50/30">
           <a
             href={featuredCasestudy.link || "#"}
             className="group grid gap-4 overflow-hidden px-6 transition-colors duration-500 ease-out hover:bg-slate-50/50 lg:grid-cols-2 xl:px-28"
@@ -100,7 +100,7 @@ export const Casestudy5 = ({
                 <a
                   key={item.company}
                   href={item.link || "#"}
-                  className={`group flex flex-col justify-between gap-12 border-slate-200 bg-white px-6 py-8 transition-colors duration-500 ease-out hover:bg-slate-50/50 md:py-16 lg:pb-16 xl:gap-16 ${
+                  className={`group flex flex-col justify-between gap-12 border-slate-200/80 bg-gradient-to-br from-white via-slate-50/60 to-blue-50/20 px-6 py-8 transition-colors duration-500 ease-out hover:from-blue-50/40 hover:via-slate-50/80 hover:to-indigo-50/30 md:py-16 lg:pb-16 xl:gap-16 ${
                     idx === 0
                       ? "xl:border-l xl:pl-8"
                       : "border-t lg:border-t-0 lg:border-l xl:border-r xl:pl-8"

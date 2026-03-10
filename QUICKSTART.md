@@ -8,6 +8,12 @@ npm run dev
 # Open http://localhost:3000
 ```
 
+### Payment Backend (Cashfree)
+```bash
+npm run dev:server
+# Runs secure Cashfree API on http://localhost:3001
+```
+
 ### Production Build
 ```bash
 npm run build
@@ -108,12 +114,64 @@ try {
 
 ## ⚙️ Environment Variables
 
-Edit `.env.local`:
+No frontend env vars needed for Cashfree — all keys stay in backend.
+
+Edit `server/.env.local`:
 ```env
-VITE_API_URL=http://localhost:3001
-VITE_API_TIMEOUT=30000
-VITE_CORS_ENABLED=true
+PORT=3001
+CASHFREE_APP_ID=your_production_app_id
+CASHFREE_SECRET_KEY=your_production_secret_key
+CASHFREE_API_VERSION=2023-08-01
+CASHFREE_DEFAULT_REFUND_SPEED=STANDARD
+APP_ORIGIN=https://volosist.com
+SUPABASE_URL=https://<your-project>.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=<service-role-key>
+SUPABASE_REFUNDS_TABLE=refunds
+SUPABASE_USER_PAYMENTS_TABLE=user_payments
 ```
+
+⚠️ Cashfree credentials must be in `server/.env.local` (backend only), never in frontend code.
+
+## 🗄️ Supabase Payment + Refund Setup
+
+Run the SQL script once in Supabase SQL Editor:
+
+```sql
+-- file in this repo
+supabase-user-payments.sql
+```
+
+This creates the `user_payments` table with refund lifecycle fields used by dashboard/admin flows.
+It also creates a dedicated `refunds` table for Cashfree refund reconciliation and webhook updates.
+
+Refund execution also requires running the local backend server:
+
+```bash
+npm run dev:server
+```
+
+The admin refund approval action calls `POST /api/cashfree/refund-order` on this backend.
+
+Request supports:
+
+- Order refund:
+  - `orderId`, `refundAmount`, `refundId`, `refundSpeed`
+- Subscription refund:
+  - `entityType: "subscription"`, `subscriptionId`, `refundAmount`, `refundId`, `refundSpeed`
+
+## 🔔 Cashfree Webhook Setup
+
+Set webhook URL in Cashfree dashboard:
+
+```text
+https://<your-domain>/api/cashfree/webhook
+```
+
+The backend verifies webhook signature and updates refund status into:
+
+- in-memory refund ledger (`/api/cashfree/refunds`)
+- Supabase `refunds` table
+- Supabase `user_payments` refund status fields (for order-linked refunds)
 
 ## 🔐 Protected Routes
 

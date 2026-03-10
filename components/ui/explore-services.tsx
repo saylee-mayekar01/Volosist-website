@@ -192,7 +192,7 @@ export function ExploreServices() {
           </div>
 
           {/* Right - Service Cards */}
-          <div className="w-full lg:w-3/5 h-[500px] lg:h-[550px] flex gap-3">
+          <div className="w-full lg:w-3/5 flex flex-col lg:flex-row gap-3 lg:h-[550px]">
             {services.map((service, index) => {
               const isHovered = hoveredIndex === index;
               return (
@@ -205,7 +205,8 @@ export function ExploreServices() {
                   onMouseEnter={() => setHoveredIndex(index)}
                   className={cn(
                     "relative cursor-pointer overflow-hidden rounded-[1.5rem] transition-all duration-700 ease-[cubic-bezier(0.23,1,0.32,1)] shadow-xl",
-                    isHovered ? "flex-[3]" : "flex-1"
+                    "h-[240px] lg:h-auto",
+                    isHovered ? "lg:flex-[3]" : "lg:flex-1"
                   )}
                 >
                   {/* Background Image */}
@@ -244,14 +245,14 @@ export function ExploreServices() {
                     )}
                   </div>
 
-                  {/* Collapsed State - Vertical Text */}
+                  {/* Collapsed State - Vertical Text (desktop only) */}
                   <AnimatePresence>
                     {!isHovered && (
                       <motion.div
                         initial={{ opacity: 0 }}
                         animate={{ opacity: 1 }}
                         exit={{ opacity: 0 }}
-                        className="absolute inset-0 flex items-center justify-center"
+                        className="hidden lg:flex absolute inset-0 items-center justify-center"
                       >
                         <span className="text-lg font-black text-white tracking-[0.15em] uppercase [writing-mode:vertical-lr] rotate-180">
                           {service.title}
@@ -263,7 +264,7 @@ export function ExploreServices() {
                   {/* Expanded Content */}
                   <div className={cn(
                     "absolute inset-0 p-6 flex flex-col justify-end text-white transition-all duration-500",
-                    isHovered ? "opacity-100" : "opacity-0 pointer-events-none"
+                    !isHovered && "lg:opacity-0 lg:pointer-events-none"
                   )}>
                     <div>
                       <h3 className="text-2xl md:text-3xl font-black tracking-tight mb-1 leading-none uppercase">

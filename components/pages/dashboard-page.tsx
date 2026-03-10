@@ -1,4 +1,5 @@
-import React, { useState, createContext, useContext, useCallback, useMemo } from 'react';
+import * as React from 'react';
+import { useState, createContext, useContext, useCallback, useMemo, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { 
@@ -57,12 +58,31 @@ import { Button } from '../ui/button';
 import { Badge } from '../ui/badge';
 import { Input } from '../ui/input';
 import { cn } from '../../lib/utils';
-import { supabase } from '../../lib/supabase';
-import { store as globalStore } from '../../lib/store';
+import {
+  supabase,
+  upsertPayment,
+  requestRefundByOrder,
+  cancelRefundByOrder,
+  hasSupabaseConfig,
+  type PaymentStatus as SupabasePaymentStatus,
+} from '../../lib/supabase';
+import { store as globalStore, ServiceCatalogItem, Payment } from '../../lib/store';
+import { createCashfreeOrder, openCashfreeCheckout, verifyCashfreePayment } from '../../lib/cashfree';
+import { downloadInvoicePdf } from '../../lib/invoice-pdf';
+import {
+  createTeamAccessInvite,
+  listTeamAccessMembers,
+  revokeTeamAccessMember,
+  updateTeamAccessMemberRole,
+  type TeamAccessMemberRecord,
+  type TeamAccessRole,
+} from '../../lib/team-access';
 
 // Types
 interface Service {
   id: number;
+  serviceId?: string;
+  cashfreeOrderId?: string;
   name: string;
   plan: string;
   status: string;
@@ -70,13 +90,15 @@ interface Service {
   color: string;
   purchaseDate: string;
   expiryDate: string;
+  lastUsageSyncDate?: string;
   renewalCost: number;
   features: string[];
   usage: { used: number; limit: number; unit: string };
 }
 
 interface TeamMember {
-  id: number;
+  id: string | number;
+  invitationId?: string;
   name: string;
   email: string;
   role: string;
@@ -147,6 +169,7 @@ interface Invoice {
 }
 
 interface DashboardContextType {
+  currentUser: any;
   activeTab: string;
   setActiveTab: (tab: string) => void;
   purchasedServices: Service[];
@@ -160,6 +183,7 @@ interface DashboardContextType {
   orders: Order[];
   addOrder: (order: Order) => void;
   invoices: Invoice[];
+  addInvoice: (invoice: Invoice) => void;
   notifications: Notification[];
   markNotificationRead: (id: string) => void;
   clearAllNotifications: () => void;
@@ -177,8 +201,110 @@ const useDashboard = () => {
   return context;
 };
 
+const DAY_IN_MS = 24 * 60 * 60 * 1000;
+
+const getStartOfDay = (value?: string | Date) => {
+  const parsed = value ? new Date(value) : new Date();
+  const safeDate = Number.isNaN(parsed.getTime()) ? new Date() : parsed;
+  return new Date(safeDate.getFullYear(), safeDate.getMonth(), safeDate.getDate());
+};
+
+const formatDateStamp = (date: Date) => {
+  const yyyy = date.getFullYear();
+  const mm = String(date.getMonth() + 1).padStart(2, '0');
+  const dd = String(date.getDate()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd}`;
+};
+
+const getElapsedFullDays = (from?: string, to: Date = new Date()) => {
+  const fromDay = getStartOfDay(from);
+  const toDay = getStartOfDay(to);
+  const diff = Math.floor((toDay.getTime() - fromDay.getTime()) / DAY_IN_MS);
+  return Math.max(0, diff);
+};
+
+const getDailyUsageIncrement = (service: Service) => {
+  const usageLimit = Number.isFinite(service.usage?.limit) ? Math.max(0, Math.round(service.usage.limit)) : 0;
+  if (usageLimit <= 0) return 0;
+
+  const unit = String(service.usage?.unit || '').toLowerCase();
+  if (unit.includes('/day')) return Math.max(1, usageLimit);
+  if (unit.includes('/month')) return Math.max(1, Math.ceil(usageLimit / 30));
+  return Math.max(1, Math.ceil(usageLimit / 45));
+};
+
+const toSupabasePaymentStatus = (status: Payment['status']): SupabasePaymentStatus => {
+  if (status === 'refund_pending') return 'refund_requested';
+  if (status === 'refunded') return 'refunded';
+  if (status === 'pending') return 'pending';
+  if (status === 'failed') return 'failed';
+  return 'success';
+};
+
+const TEAM_ACCESS_ROLES: TeamAccessRole[] = ['Admin', 'Editor', 'Viewer'];
+
+const normalizeTeamAccessRole = (role: unknown): TeamAccessRole => {
+  const normalized = String(role || '').trim().toLowerCase();
+  if (normalized === 'admin') return 'Admin';
+  if (normalized === 'editor') return 'Editor';
+  return 'Viewer';
+};
+
+const formatTeamMemberActivity = (member: TeamAccessMemberRecord) => {
+  if (member.status === 'pending') return 'Invitation sent';
+  if (member.status === 'active') {
+    if (!member.acceptedAt) return 'Active';
+
+    const acceptedDate = new Date(member.acceptedAt);
+    if (Number.isNaN(acceptedDate.getTime())) return 'Active';
+    return `Joined ${acceptedDate.toLocaleDateString('en-US', {
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric',
+    })}`;
+  }
+
+  if (member.status === 'revoked') return 'Access revoked';
+  if (member.status === 'expired') return 'Invite expired';
+  return 'Updated recently';
+};
+
+const mapTeamAccessRecordToMember = (member: TeamAccessMemberRecord): TeamMember => {
+  const safeName = String(member.memberName || '').trim() || String(member.memberEmail || '').split('@')[0] || 'Team Member';
+  const safeEmail = String(member.memberEmail || '').trim().toLowerCase();
+
+  return {
+    id: member.id,
+    invitationId: member.id,
+    name: safeName,
+    email: safeEmail,
+    role: normalizeTeamAccessRole(member.role),
+    avatar: null,
+    status: String(member.status || '').trim().toLowerCase() || 'pending',
+    lastActive: formatTeamMemberActivity(member),
+  };
+};
+
+const getDashboardUserIdentity = (user: any) => {
+  const userId = String(user?.id || '').trim();
+  const email = String(user?.email || '').trim().toLowerCase();
+  const fullName = String(user?.user_metadata?.full_name || '').trim();
+  const firstName = String(user?.user_metadata?.first_name || '').trim();
+  const lastName = String(user?.user_metadata?.last_name || '').trim();
+  const fallbackName = email.split('@')[0] || 'User';
+  const name = fullName || `${firstName} ${lastName}`.trim() || fallbackName;
+  return { userId, email, name };
+};
+
 // Provider Component
-const DashboardProvider = ({ children }: { children: React.ReactNode }) => {
+const DashboardProvider = ({ children, user }: { children: React.ReactNode; user: any }) => {
+  const DASHBOARD_STORAGE_NAMESPACE = 'volosist_dashboard_state_v1';
+  const userStorageSuffix = useMemo(() => {
+    const rawIdentity = String(user?.id || user?.email || 'anonymous').trim().toLowerCase();
+    const normalized = rawIdentity.replace(/[^a-z0-9_-]/g, '_');
+    return normalized || 'anonymous';
+  }, [user?.email, user?.id]);
+  const DASHBOARD_STORAGE_KEY = `${DASHBOARD_STORAGE_NAMESPACE}_${userStorageSuffix}`;
   const [activeTab, setActiveTab] = useState('overview');
   const [purchasedServices, setPurchasedServices] = useState<Service[]>(INITIAL_SERVICES);
   const [teamMembers, setTeamMembers] = useState<TeamMember[]>(INITIAL_TEAM_MEMBERS);
@@ -186,8 +312,309 @@ const DashboardProvider = ({ children }: { children: React.ReactNode }) => {
   const [modal, setModal] = useState<{ type: string; data?: any } | null>(null);
   const [cart, setCart] = useState<CartItem[]>([]);
   const [orders, setOrders] = useState<Order[]>(INITIAL_ORDERS);
-  const [invoices] = useState<Invoice[]>(INITIAL_INVOICES);
+  const [invoices, setInvoices] = useState<Invoice[]>(INITIAL_INVOICES);
   const [notifications, setNotifications] = useState<Notification[]>(INITIAL_NOTIFICATIONS);
+  const [hasHydrated, setHasHydrated] = useState(false);
+  const [hydratedStorageKey, setHydratedStorageKey] = useState('');
+
+  const inferServiceIdFromName = useCallback((name: string) => {
+    const normalized = String(name || '').toLowerCase();
+    if (normalized.includes('sales')) return 'sales';
+    if (normalized.includes('voice')) return 'voice';
+    if (normalized.includes('marketing')) return 'marketing';
+    if (normalized.includes('business')) return 'business';
+    return 'sales';
+  }, []);
+
+  const progressUsageByDate = useCallback((services: Service[]) => {
+    if (!Array.isArray(services) || services.length === 0) return services;
+
+    const today = getStartOfDay();
+    const todayStamp = formatDateStamp(today);
+    let hasChanges = false;
+
+    const progressed = services.map((service) => {
+      const safeLimit = Number.isFinite(service.usage?.limit) ? Math.max(0, Math.round(service.usage.limit)) : 0;
+      const safeUsed = Number.isFinite(service.usage?.used) ? Math.max(0, Math.round(service.usage.used)) : 0;
+      const normalizedUsed = Math.min(safeUsed, safeLimit);
+
+      const anchorDate = service.lastUsageSyncDate || service.purchaseDate || todayStamp;
+      const elapsedDays = getElapsedFullDays(anchorDate, today);
+      const increment = getDailyUsageIncrement(service);
+      const progressedUsed = elapsedDays > 0
+        ? Math.min(safeLimit, normalizedUsed + increment * elapsedDays)
+        : normalizedUsed;
+
+      const shouldUpdateUsage = progressedUsed !== safeUsed || safeLimit !== service.usage.limit;
+      const shouldUpdateSyncDate = service.lastUsageSyncDate !== todayStamp;
+
+      if (!shouldUpdateUsage && !shouldUpdateSyncDate) {
+        return service;
+      }
+
+      hasChanges = true;
+      return {
+        ...service,
+        usage: {
+          ...service.usage,
+          used: progressedUsed,
+          limit: safeLimit,
+        },
+        lastUsageSyncDate: todayStamp,
+      };
+    });
+
+    return hasChanges ? progressed : services;
+  }, []);
+
+  useEffect(() => {
+    setHasHydrated(false);
+    setHydratedStorageKey('');
+    setPurchasedServices(INITIAL_SERVICES);
+    setTeamMembers(INITIAL_TEAM_MEMBERS);
+    setCart([]);
+    setOrders(INITIAL_ORDERS);
+    setInvoices(INITIAL_INVOICES);
+    setNotifications(INITIAL_NOTIFICATIONS);
+
+    try {
+      let raw = localStorage.getItem(DASHBOARD_STORAGE_KEY);
+      if (!raw) {
+        const legacyRaw = localStorage.getItem(DASHBOARD_STORAGE_NAMESPACE);
+        if (legacyRaw) {
+          raw = legacyRaw;
+          localStorage.setItem(DASHBOARD_STORAGE_KEY, legacyRaw);
+        }
+      }
+
+      if (raw) {
+        const data = JSON.parse(raw) as {
+          purchasedServices?: Array<Omit<Service, 'icon'> & { serviceId?: string }>;
+          teamMembers?: TeamMember[];
+          cart?: Array<Omit<CartItem, 'icon'>>;
+          orders?: Array<Omit<Order, 'items'> & { items: Array<Omit<CartItem, 'icon'>> }>;
+          invoices?: Invoice[];
+          notifications?: Notification[];
+        };
+
+        if (Array.isArray(data.purchasedServices)) {
+          const hydratedServices = data.purchasedServices
+            .filter((service) => {
+              const isLegacyDemoSeed =
+                (service.id === 1 && service.purchaseDate === '2025-08-15') ||
+                (service.id === 2 && service.purchaseDate === '2025-06-01');
+              return !isLegacyDemoSeed;
+            })
+            .map((service) => {
+              const serviceId = service.serviceId || inferServiceIdFromName(service.name);
+              return {
+                ...service,
+                serviceId,
+                icon: SERVICE_VISUALS[serviceId]?.icon || <Package className="size-5 text-white" />,
+                color: service.color || SERVICE_VISUALS[serviceId]?.serviceColor || 'bg-slate-600',
+              };
+            });
+
+          setPurchasedServices(progressUsageByDate(hydratedServices));
+        }
+
+        if (Array.isArray(data.teamMembers)) setTeamMembers(data.teamMembers);
+
+        if (Array.isArray(data.cart)) {
+          setCart(
+            data.cart.map((item) => ({
+              ...item,
+              icon: SERVICE_VISUALS[item.serviceId]?.icon || <Package className="size-6" />,
+            }))
+          );
+        }
+
+        if (Array.isArray(data.orders)) {
+          setOrders(
+            data.orders.map((order) => ({
+              ...order,
+              items: order.items.map((item) => ({
+                ...item,
+                icon: SERVICE_VISUALS[item.serviceId]?.icon || <Package className="size-6" />,
+              })),
+            }))
+          );
+        }
+
+        if (Array.isArray(data.invoices)) setInvoices(data.invoices);
+        if (Array.isArray(data.notifications)) setNotifications(data.notifications);
+      }
+    } catch (error) {
+      console.warn('[dashboard] failed to hydrate persisted state', error);
+    } finally {
+      setHydratedStorageKey(DASHBOARD_STORAGE_KEY);
+      setHasHydrated(true);
+    }
+  }, [DASHBOARD_STORAGE_KEY, DASHBOARD_STORAGE_NAMESPACE, inferServiceIdFromName, progressUsageByDate]);
+
+  useEffect(() => {
+    if (!hasHydrated || hydratedStorageKey !== DASHBOARD_STORAGE_KEY) return;
+
+    try {
+      localStorage.setItem(
+        DASHBOARD_STORAGE_KEY,
+        JSON.stringify({
+          purchasedServices: purchasedServices.map(({ icon, ...service }) => service),
+          teamMembers,
+          cart: cart.map(({ icon, ...item }) => item),
+          orders: orders.map((order) => ({
+            ...order,
+            items: order.items.map(({ icon, ...item }) => item),
+          })),
+          invoices,
+          notifications,
+        })
+      );
+    } catch (error) {
+      console.warn('[dashboard] failed to persist state', error);
+    }
+  }, [DASHBOARD_STORAGE_KEY, hasHydrated, hydratedStorageKey, purchasedServices, teamMembers, cart, orders, invoices, notifications]);
+
+  useEffect(() => {
+    if (!hasHydrated) return;
+
+    const syncUsageByDay = () => {
+      setPurchasedServices((prev) => progressUsageByDate(prev));
+    };
+
+    syncUsageByDay();
+
+    const handleWindowFocus = () => syncUsageByDay();
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        syncUsageByDay();
+      }
+    };
+
+    window.addEventListener('focus', handleWindowFocus);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    const intervalId = window.setInterval(syncUsageByDay, 60 * 60 * 1000);
+
+    return () => {
+      window.clearInterval(intervalId);
+      window.removeEventListener('focus', handleWindowFocus);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [hasHydrated, progressUsageByDate]);
+
+  useEffect(() => {
+    const userId = String(user?.id || '').trim();
+    const userEmail = String(user?.email || '').trim().toLowerCase();
+    if (!userId || !userEmail) return;
+
+    const firstName = String(user?.user_metadata?.first_name || '').trim();
+    const lastName = String(user?.user_metadata?.last_name || '').trim();
+    const fullName = String(user?.user_metadata?.full_name || '').trim();
+    const fallbackName = userEmail.split('@')[0] || 'User';
+
+    globalStore.upsertUserProfile({
+      id: userId,
+      email: userEmail,
+      name: fullName || `${firstName} ${lastName}`.trim() || fallbackName,
+      company: String(user?.user_metadata?.company || '').trim() || undefined,
+      phone: String(user?.user_metadata?.phone || '').trim() || undefined,
+      plan: 'Basic',
+    });
+  }, [user]);
+
+  useEffect(() => {
+    const { userId, email } = getDashboardUserIdentity(user);
+    if (!hasHydrated || !userId || !email) return;
+
+    let cancelled = false;
+
+    listTeamAccessMembers(userId, email)
+      .then((members) => {
+        if (cancelled) return;
+
+        const mappedMembers = Array.isArray(members)
+          ? members.map((member) => mapTeamAccessRecordToMember(member))
+          : [];
+
+        setTeamMembers(mappedMembers);
+      })
+      .catch((error) => {
+        console.warn('[dashboard] failed to load team access members:', error);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [hasHydrated, user?.email, user?.id]);
+
+  useEffect(() => {
+    const userId = String(user?.id || '').trim();
+    const userEmail = String(user?.email || '').trim().toLowerCase();
+    if (!hasHydrated || !hasSupabaseConfig || !userId || !userEmail) return;
+
+    const fullName = String(user?.user_metadata?.full_name || '').trim();
+    const firstName = String(user?.user_metadata?.first_name || '').trim();
+    const lastName = String(user?.user_metadata?.last_name || '').trim();
+    const userName = fullName || `${firstName} ${lastName}`.trim() || userEmail.split('@')[0] || 'User';
+    const userPhone = String(user?.user_metadata?.phone || user?.phone || '').trim();
+
+    let cancelled = false;
+
+    const syncLocalPaymentsToSupabase = async () => {
+      const localPayments = globalStore.getPayments();
+      const candidatePayments = localPayments.filter((payment) => {
+        const safeOrderId = String(payment.cashfreeOrderId || '').trim();
+        if (!safeOrderId) return false;
+
+        const paymentUserId = String(payment.userId || '').trim();
+        const paymentEmail = String(payment.userEmail || '').trim().toLowerCase();
+        return paymentUserId === userId || paymentEmail === userEmail;
+      });
+
+      for (const payment of candidatePayments) {
+        if (cancelled) return;
+
+        try {
+          await upsertPayment({
+            user_id: userId,
+            user_name: String(payment.userName || '').trim() || userName,
+            user_email: userEmail,
+            user_phone: userPhone || undefined,
+            plan_id: inferServiceIdFromName(payment.service || payment.plan || 'service'),
+            plan_name: `${payment.service || 'Service'} (${payment.plan || 'Plan'})`,
+            amount: Math.max(0, Math.round(Number(payment.amount || 0) * 100)),
+            currency: 'INR',
+            cashfree_order_id: String(payment.cashfreeOrderId || '').trim(),
+            status: toSupabasePaymentStatus(payment.status),
+            created_at: String(payment.date || '').trim() || new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+            refund_reason: payment.refundReason || undefined,
+            refund_note: payment.refundNotes || undefined,
+            refund_requested_at: payment.refundRequestedAt || undefined,
+            refund_completed_at: payment.refundResolvedAt || undefined,
+          });
+        } catch (error) {
+          console.warn('[dashboard] failed to sync local payment with Supabase:', payment.cashfreeOrderId, error);
+        }
+      }
+    };
+
+    syncLocalPaymentsToSupabase();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    hasHydrated,
+    inferServiceIdFromName,
+    user?.email,
+    user?.id,
+    user?.phone,
+    user?.user_metadata?.first_name,
+    user?.user_metadata?.full_name,
+    user?.user_metadata?.last_name,
+    user?.user_metadata?.phone,
+  ]);
 
   const showToast = useCallback((message: string, type: 'success' | 'error' | 'info') => {
     const id = Date.now();
@@ -201,6 +628,13 @@ const DashboardProvider = ({ children }: { children: React.ReactNode }) => {
 
   const closeModal = useCallback(() => {
     setModal(null);
+  }, []);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('cf_return') === '1' && params.get('cf_order_id')) {
+      setModal({ type: 'checkout' });
+    }
   }, []);
 
   const addToCart = useCallback((item: CartItem) => {
@@ -223,6 +657,10 @@ const DashboardProvider = ({ children }: { children: React.ReactNode }) => {
     setOrders(prev => [order, ...prev]);
   }, []);
 
+  const addInvoice = useCallback((invoice: Invoice) => {
+    setInvoices(prev => [invoice, ...prev]);
+  }, []);
+
   const markNotificationRead = useCallback((id: string) => {
     setNotifications(prev => prev.map(n => n.id === id ? { ...n, read: true } : n));
   }, []);
@@ -233,6 +671,7 @@ const DashboardProvider = ({ children }: { children: React.ReactNode }) => {
 
   return (
     <DashboardContext.Provider value={{
+      currentUser: user,
       activeTab,
       setActiveTab,
       purchasedServices,
@@ -246,6 +685,7 @@ const DashboardProvider = ({ children }: { children: React.ReactNode }) => {
       orders,
       addOrder,
       invoices,
+      addInvoice,
       notifications,
       markNotificationRead,
       clearAllNotifications,
@@ -276,6 +716,11 @@ const DashboardProvider = ({ children }: { children: React.ReactNode }) => {
         onClose={closeModal}
         service={modal?.data}
       />
+      <RefundRequestModal
+        isOpen={modal?.type === 'refund'}
+        onClose={closeModal}
+        service={modal?.data}
+      />
       <InviteMemberModal
         isOpen={modal?.type === 'invite'}
         onClose={closeModal}
@@ -302,6 +747,15 @@ const DashboardProvider = ({ children }: { children: React.ReactNode }) => {
   );
 };
 
+const resolveServiceIdFromName = (name: string) => {
+  const normalized = String(name || '').toLowerCase();
+  if (normalized.includes('sales')) return 'sales';
+  if (normalized.includes('voice')) return 'voice';
+  if (normalized.includes('marketing')) return 'marketing';
+  if (normalized.includes('business')) return 'business';
+  return 'sales';
+};
+
 interface DashboardPageProps {
   user: any;
   onNavigate: (view: any) => void;
@@ -317,136 +771,43 @@ const SIDEBAR_ITEMS = [
 ];
 
 // Initial Data - Sample data for demo (replace with Supabase in production)
-const INITIAL_SERVICES: Service[] = [
-  { 
-    id: 1,
-    name: 'Sales & Lead Automation',
-    plan: 'Pro',
-    status: 'active',
-    icon: <TrendingUp className="size-5 text-white" />,
-    color: 'bg-blue-600',
-    purchaseDate: '2025-08-15',
-    expiryDate: '2026-08-15',
-    renewalCost: 1490,
-    features: ['Automated Follow-ups', 'AI Lead Capture', 'CRM Automation', 'Sales Chatbot'],
-    usage: { used: 12500, limit: 20000, unit: 'leads/month' }
-  },
-  { 
-    id: 2,
-    name: 'Marketing & Content',
-    plan: 'Basic',
-    status: 'expiring',
-    icon: <Megaphone className="size-5 text-white" />,
-    color: 'bg-purple-600',
-    purchaseDate: '2025-06-01',
-    expiryDate: '2026-03-01',
-    renewalCost: 490,
-    features: ['AI Content Generation', 'Social Automation', 'SEO Tools'],
-    usage: { used: 45, limit: 50, unit: 'posts/month' }
-  },
-];
+const INITIAL_SERVICES: Service[] = [];
 
 const INITIAL_TEAM_MEMBERS: TeamMember[] = [];
 
-// Available Services to Purchase
-const AVAILABLE_SERVICES = [
-  {
-    id: 'sales',
-    name: 'Sales & Lead Automation',
-    description: 'AI-powered lead capture, CRM automation & outbound calling.',
+const SERVICE_VISUALS: Record<string, { icon: React.ReactNode; color: string; bgColor: string; serviceColor: string }> = {
+  sales: {
     icon: <TrendingUp className="size-6" />,
     color: 'text-blue-600',
     bgColor: 'bg-blue-100',
     serviceColor: 'bg-blue-600',
-    plans: [
-      { name: 'Basic', price: 490, features: ['5,000 leads/month', 'Email Follow-ups', 'Basic CRM Sync'], limit: 5000 },
-      { name: 'Pro', price: 1490, features: ['20,000 leads/month', 'Email + WhatsApp + Calls', 'Full CRM Automation', 'AI Chatbot'], limit: 20000 },
-      { name: 'Business', price: 4990, features: ['Unlimited leads', 'All channels', 'Priority Support', 'Custom Integration'], limit: 100000 },
-    ]
   },
-  {
-    id: 'voice',
-    name: 'AI Voice & Calling',
-    description: 'Intelligent voice automation for inbound/outbound calls.',
+  voice: {
     icon: <Phone className="size-6" />,
     color: 'text-emerald-600',
     bgColor: 'bg-emerald-100',
     serviceColor: 'bg-emerald-600',
-    plans: [
-      { name: 'Basic', price: 790, features: ['1,000 minutes/month', 'Inbound Only', 'Basic Transcription'], limit: 1000 },
-      { name: 'Pro', price: 1990, features: ['5,000 minutes/month', 'Inbound + Outbound', 'Full Transcription', 'Sentiment Analysis'], limit: 5000 },
-      { name: 'Business', price: 4990, features: ['Unlimited minutes', 'All features', 'Human Handoff', 'Custom Voice'], limit: 50000 },
-    ]
   },
-  {
-    id: 'marketing',
-    name: 'Marketing & Content',
-    description: 'AI content generation, social media & ads automation.',
+  marketing: {
     icon: <Megaphone className="size-6" />,
     color: 'text-purple-600',
     bgColor: 'bg-purple-100',
     serviceColor: 'bg-purple-600',
-    plans: [
-      { name: 'Basic', price: 490, features: ['50 posts/month', 'AI Content Gen', '2 Social Accounts'], limit: 50 },
-      { name: 'Pro', price: 1290, features: ['200 posts/month', 'All content types', '10 Social Accounts', 'Ad Automation'], limit: 200 },
-      { name: 'Business', price: 3990, features: ['Unlimited posts', 'Full automation', 'Unlimited accounts', 'SEO Suite'], limit: 1000 },
-    ]
   },
-  {
-    id: 'business',
-    name: 'Business Solutions',
-    description: 'Web development, design, virtual assistants & more.',
+  business: {
     icon: <Briefcase className="size-6" />,
     color: 'text-orange-600',
     bgColor: 'bg-orange-100',
     serviceColor: 'bg-orange-600',
-    plans: [
-      { name: 'Basic', price: 990, features: ['1 Website', 'Basic Design', 'Email Support'], limit: 1 },
-      { name: 'Pro', price: 2490, features: ['3 Websites', 'Premium Design', 'Virtual Assistant', 'Priority Support'], limit: 3 },
-      { name: 'Business', price: 6990, features: ['Unlimited Sites', 'Full VA Suite', 'Dedicated Manager', 'Custom Solutions'], limit: 10 },
-    ]
   },
-];
+};
 
 // Invoice Data - Start empty (orders and invoices are created on purchase)
 const INITIAL_ORDERS: Order[] = [];
 const INITIAL_INVOICES: Invoice[] = [];
 
 // Initial Notifications
-const INITIAL_NOTIFICATIONS: Notification[] = [
-  {
-    id: 'notif_1',
-    title: 'Subscription Expiring Soon',
-    message: 'Your Marketing & Content subscription expires in 17 days. Renew now to avoid service interruption.',
-    type: 'warning',
-    read: false,
-    timestamp: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
-  },
-  {
-    id: 'notif_2',
-    title: 'Payment Successful',
-    message: 'Your payment of $1,490 for Sales & Lead Automation has been processed.',
-    type: 'success',
-    read: false,
-    timestamp: new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(),
-  },
-  {
-    id: 'notif_3',
-    title: 'New Feature Available',
-    message: 'AI Voice & Calling now supports real-time sentiment analysis. Upgrade to Pro to access this feature.',
-    type: 'info',
-    read: true,
-    timestamp: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString(),
-  },
-  {
-    id: 'notif_4',
-    title: 'Usage Alert',
-    message: 'You have used 90% of your monthly leads quota. Consider upgrading your plan.',
-    type: 'alert',
-    read: true,
-    timestamp: new Date(Date.now() - 5 * 24 * 60 * 60 * 1000).toISOString(),
-  },
-];
+const INITIAL_NOTIFICATIONS: Notification[] = [];
 
 // --- Modal Components ---
 
@@ -506,6 +867,7 @@ const SubscribeModal = ({ isOpen, onClose, service, selectedPlan }: { isOpen: bo
 
     const newService: Service = {
       id: Date.now(),
+      serviceId: service.id,
       name: service.name,
       plan: selectedPlan.name,
       status: 'active',
@@ -513,6 +875,7 @@ const SubscribeModal = ({ isOpen, onClose, service, selectedPlan }: { isOpen: bo
       color: service.serviceColor,
       purchaseDate: today.toISOString().split('T')[0],
       expiryDate: expiryDate.toISOString().split('T')[0],
+      lastUsageSyncDate: today.toISOString().split('T')[0],
       renewalCost: selectedPlan.price * 12,
       features: selectedPlan.features,
       usage: { used: 0, limit: selectedPlan.limit, unit: unitMap[service.id] }
@@ -553,11 +916,11 @@ const SubscribeModal = ({ isOpen, onClose, service, selectedPlan }: { isOpen: bo
         <div className="p-4 bg-blue-50 rounded-xl border border-blue-100">
           <div className="flex justify-between items-center">
             <span className="text-sm text-slate-600">Monthly Cost</span>
-            <span className="text-2xl font-black text-slate-900">${selectedPlan.price}</span>
+            <span className="text-2xl font-black text-slate-900">₹{selectedPlan.price}</span>
           </div>
           <div className="flex justify-between items-center mt-2">
             <span className="text-xs text-slate-400">Annual Total</span>
-            <span className="text-sm font-bold text-slate-600">${selectedPlan.price * 12}/year</span>
+            <span className="text-sm font-bold text-slate-600">₹{selectedPlan.price * 12}/year</span>
           </div>
         </div>
 
@@ -574,26 +937,45 @@ const SubscribeModal = ({ isOpen, onClose, service, selectedPlan }: { isOpen: bo
 
 // Renew Modal
 const RenewModal = ({ isOpen, onClose, service }: { isOpen: boolean; onClose: () => void; service: Service | null }) => {
-  const { setPurchasedServices, showToast, setActiveTab } = useDashboard();
+  const { clearCart, addToCart, openModal, showToast, setActiveTab } = useDashboard();
   const [processing, setProcessing] = useState(false);
 
   const handleRenew = async () => {
     if (!service) return;
     setProcessing(true);
-    await new Promise(r => setTimeout(r, 1500));
 
-    const newExpiryDate = new Date(service.expiryDate);
-    newExpiryDate.setFullYear(newExpiryDate.getFullYear() + 1);
+    try {
+      const serviceId = service.serviceId || resolveServiceIdFromName(service.name);
+      const normalizedPlanName =
+        String(service.plan || '')
+          .trim()
+          .toLowerCase()
+          .replace(/^\w/, (char) => char.toUpperCase()) || 'Basic';
+      const renewalCartItem: Omit<CartItem, 'icon'> = {
+        id: `renew_${service.id}_${Date.now()}`,
+        serviceId,
+        serviceName: service.name,
+        plan: normalizedPlanName,
+        price: Number(service.renewalCost.toFixed(2)),
+        billingCycle: 'yearly',
+        features: service.features,
+        serviceColor: service.color,
+      };
 
-    setPurchasedServices(prev => prev.map(s => 
-      s.id === service.id 
-        ? { ...s, expiryDate: newExpiryDate.toISOString().split('T')[0], status: 'active' } 
-        : s
-    ));
+      localStorage.setItem('volosist_pending_renewal_service', String(service.id));
+      clearCart();
+      addToCart({
+        ...renewalCartItem,
+        icon: SERVICE_VISUALS[serviceId]?.icon || <Package className="size-6" />,
+      });
 
-    setProcessing(false);
-    showToast(`${service.name} renewed for another year!`, 'success');
-    onClose();
+      showToast('Review billing details and continue to Cashfree renewal payment.', 'info');
+      openModal('checkout');
+    } catch (error: any) {
+      showToast(error?.message || 'Unable to prepare renewal checkout. Please try again.', 'error');
+    } finally {
+      setProcessing(false);
+    }
   };
 
   if (!service) return null;
@@ -631,7 +1013,7 @@ const RenewModal = ({ isOpen, onClose, service }: { isOpen: boolean; onClose: ()
         <div className="p-4 bg-blue-50 rounded-xl border border-blue-100">
           <div className="flex justify-between items-center">
             <span className="text-sm text-slate-600">Renewal Cost</span>
-            <span className="text-2xl font-black text-slate-900">${service.renewalCost}</span>
+            <span className="text-2xl font-black text-slate-900">₹{service.renewalCost}</span>
           </div>
           <div className="text-xs text-slate-400 mt-1">for 1 year</div>
         </div>
@@ -659,36 +1041,533 @@ const RenewModal = ({ isOpen, onClose, service }: { isOpen: boolean; onClose: ()
   );
 };
 
+const REFUND_REASON_OPTIONS = [
+  { value: 'accidental_purchase', label: 'Accidental purchase' },
+  { value: 'duplicate_payment', label: 'Duplicate payment' },
+  { value: 'wrong_plan_selected', label: 'Wrong plan selected' },
+  { value: 'service_not_used', label: 'Service not used' },
+  { value: 'technical_issue', label: 'Technical issue / service issue' },
+  { value: 'other', label: 'Other' },
+];
+
+const RefundRequestModal = ({ isOpen, onClose, service }: { isOpen: boolean; onClose: () => void; service: Service | null }) => {
+  const { showToast, currentUser } = useDashboard();
+  const [reason, setReason] = useState(REFUND_REASON_OPTIONS[0].value);
+  const [notes, setNotes] = useState('');
+  const [contactEmail, setContactEmail] = useState('');
+  const [contactPhone, setContactPhone] = useState('');
+  const [policyAccepted, setPolicyAccepted] = useState(false);
+  const [formErrors, setFormErrors] = useState<Record<string, string>>({});
+  const [backendError, setBackendError] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [payments, setPayments] = useState<Payment[]>(globalStore.getPayments());
+
+  const currentUserId = String(currentUser?.id || '').trim();
+  const currentUserEmail = String(currentUser?.email || '').trim().toLowerCase();
+
+  const normalizeLookupKey = (value: string) =>
+    String(value || '')
+      .toLowerCase()
+      .replace(/[^a-z0-9]/g, '');
+
+  const resolveServiceBucket = (value: string) => {
+    const normalized = normalizeLookupKey(value);
+    if (normalized.includes('sales')) return 'sales';
+    if (normalized.includes('voice') || normalized.includes('call')) return 'voice';
+    if (normalized.includes('marketing') || normalized.includes('content')) return 'marketing';
+    if (normalized.includes('business')) return 'business';
+    return '';
+  };
+
+  const normalizeRefundStatus = (status: string | undefined | null): Payment['status'] => {
+    const normalized = String(status || '').trim().toLowerCase();
+    if (normalized === 'completed' || normalized === 'success' || normalized === 'paid') return 'completed';
+    if (normalized === 'refund_pending' || normalized === 'refund_requested' || normalized === 'requested') return 'refund_pending';
+    if (normalized === 'refund_cancelled' || normalized === 'refund_canceled' || normalized === 'cancelled') return 'refund_cancelled';
+    if (normalized === 'refunded' || normalized === 'refund') return 'refunded';
+    if (normalized === 'pending') return 'pending';
+    return 'failed';
+  };
+
+  const getRefundCandidatePriority = (status: Payment['status']) => {
+    if (status === 'completed') return 5;
+    if (status === 'refund_cancelled') return 4;
+    if (status === 'refund_pending') return 3;
+    if (status === 'refunded') return 2;
+    if (status === 'pending') return 1;
+    return 0;
+  };
+
+  const getReasonLabel = (value: string) =>
+    REFUND_REASON_OPTIONS.find((option) => option.value === value)?.label || 'Other';
+
+  const validateRefundForm = () => {
+    const nextErrors: Record<string, string> = {};
+    const trimmedNotes = notes.trim();
+    const trimmedContactEmail = contactEmail.trim().toLowerCase();
+    const normalizedPhoneDigits = contactPhone.replace(/\D/g, '');
+
+    if (!reason) {
+      nextErrors.reason = 'Select a refund reason.';
+    }
+
+    if (trimmedNotes.length < 20) {
+      nextErrors.notes = 'Please provide at least 20 characters describing the issue.';
+    }
+
+    if (reason === 'other' && trimmedNotes.length < 30) {
+      nextErrors.notes = 'Please provide more detail (minimum 30 characters) for "Other" reason.';
+    }
+
+    if (!/^\S+@\S+\.\S+$/.test(trimmedContactEmail)) {
+      nextErrors.contactEmail = 'Enter a valid contact email address.';
+    }
+
+    if (!/^\d{10,15}$/.test(normalizedPhoneDigits)) {
+      nextErrors.contactPhone = 'Enter a valid contact phone number.';
+    }
+
+    if (!policyAccepted) {
+      nextErrors.policy = 'Please acknowledge the refund policy before submitting.';
+    }
+
+    setFormErrors(nextErrors);
+    return {
+      isValid: Object.keys(nextErrors).length === 0,
+      trimmedNotes,
+      trimmedContactEmail,
+      normalizedPhoneDigits,
+    };
+  };
+
+  useEffect(() => {
+    if (!isOpen) return;
+
+    setReason(REFUND_REASON_OPTIONS[0].value);
+    setNotes('');
+    setContactEmail(currentUserEmail);
+    setContactPhone(String(currentUser?.user_metadata?.phone || currentUser?.phone || '').trim());
+    setPolicyAccepted(false);
+    setFormErrors({});
+    setBackendError('');
+  }, [isOpen, service?.id, currentUserEmail, currentUser?.phone, currentUser?.user_metadata?.phone]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+
+    const syncPayments = () => {
+      setPayments(globalStore.getPayments());
+    };
+
+    syncPayments();
+    const unsubscribe = globalStore.subscribe(syncPayments);
+    return unsubscribe;
+  }, [isOpen]);
+
+  const selectedPayment = useMemo(() => {
+    if (!service || (!currentUserId && !currentUserEmail)) return null;
+    const serviceName = String(service.name || '').trim();
+    const serviceNameKey = normalizeLookupKey(serviceName);
+    const serviceBucket = resolveServiceBucket(serviceName);
+    const legacyUserIds = new Set(['current_user', 'dev-user', 'anonymous', 'guest']);
+    const legacyEmails = new Set(['user@example.com', 'demo@example.com', 'test@example.com']);
+
+    const getSafeTimestamp = (value: string) => {
+      const parsed = new Date(value).getTime();
+      return Number.isFinite(parsed) ? parsed : 0;
+    };
+
+    const isUserMatch = (payment: Payment) => {
+      const paymentUserId = String(payment.userId || '').trim().toLowerCase();
+      const paymentEmail = String(payment.userEmail || '').trim().toLowerCase();
+
+      if (currentUserId && String(payment.userId || '').trim() === currentUserId) return true;
+      if (currentUserEmail && paymentEmail === currentUserEmail) return true;
+
+      if (currentUserEmail && legacyUserIds.has(paymentUserId) && (!paymentEmail || legacyEmails.has(paymentEmail))) {
+        return true;
+      }
+
+      return false;
+    };
+
+    const isServiceMatch = (payment: Payment) => {
+      const paymentServiceName = String(payment.service || '').trim();
+      const paymentServiceKey = normalizeLookupKey(paymentServiceName);
+      const paymentServiceBucket = resolveServiceBucket(paymentServiceName);
+      const hasComparableKeys = Boolean(serviceNameKey && paymentServiceKey);
+
+      const directMatch =
+        hasComparableKeys && (
+          paymentServiceKey === serviceNameKey ||
+          paymentServiceKey.includes(serviceNameKey) ||
+          serviceNameKey.includes(paymentServiceKey)
+        );
+
+      const bucketMatch = Boolean(serviceBucket && paymentServiceBucket && serviceBucket === paymentServiceBucket);
+
+      const itemMatch = Array.isArray(payment.items)
+        ? payment.items.some((item) => {
+            if (!item || typeof item !== 'object') return false;
+
+            const itemName = String((item as { name?: string }).name || '').trim();
+            const itemKey = normalizeLookupKey(itemName);
+            const itemBucket = resolveServiceBucket(itemName);
+            const hasComparableItemKeys = Boolean(serviceNameKey && itemKey);
+
+            return (
+              (hasComparableItemKeys && (
+                itemKey === serviceNameKey ||
+                itemKey.includes(serviceNameKey) ||
+                serviceNameKey.includes(itemKey)
+              )) ||
+              Boolean(serviceBucket && itemBucket && serviceBucket === itemBucket)
+            );
+          })
+        : false;
+
+      return directMatch || bucketMatch || itemMatch;
+    };
+
+    return (
+      payments
+        .filter((payment) => isUserMatch(payment) && isServiceMatch(payment))
+        .sort((left, right) => {
+          const rightPriority = getRefundCandidatePriority(normalizeRefundStatus((right as { status?: string }).status));
+          const leftPriority = getRefundCandidatePriority(normalizeRefundStatus((left as { status?: string }).status));
+          if (rightPriority !== leftPriority) return rightPriority - leftPriority;
+
+          return getSafeTimestamp(right.date) - getSafeTimestamp(left.date);
+        })[0] || null
+    );
+  }, [payments, service, currentUserEmail, currentUserId]);
+
+  const selectedPaymentStatus = selectedPayment
+    ? normalizeRefundStatus((selectedPayment as { status?: string }).status)
+    : null;
+
+  const canRequestRefund =
+    selectedPaymentStatus === 'completed' || selectedPaymentStatus === 'refund_cancelled';
+  const canCancelRequest = selectedPaymentStatus === 'refund_pending';
+  const isAlreadyRefunded = selectedPaymentStatus === 'refunded';
+
+  const handleSubmitRefundRequest = async () => {
+    if (!service || !selectedPayment) {
+      showToast('Unable to find payment details for this refund request.', 'error');
+      return;
+    }
+
+    const validation = validateRefundForm();
+    if (!validation.isValid) {
+      showToast('Please complete all required refund details.', 'error');
+      return;
+    }
+
+    if (!selectedPayment.cashfreeOrderId) {
+      const missingOrderMessage = 'Refund cannot be submitted because backend payment reference is missing. Contact support.';
+      setBackendError(missingOrderMessage);
+      showToast(missingOrderMessage, 'error');
+      return;
+    }
+
+    setSubmitting(true);
+    setBackendError('');
+
+    try {
+      const reasonLabel = getReasonLabel(reason);
+      const refundPayload = [
+        `Reason: ${reasonLabel}`,
+        `Details: ${validation.trimmedNotes}`,
+        `Contact Email: ${validation.trimmedContactEmail}`,
+        `Contact Phone: ${validation.normalizedPhoneDigits}`,
+        'Policy Acknowledged: Yes',
+      ].join(' | ');
+
+      await requestRefundByOrder(selectedPayment.cashfreeOrderId, refundPayload);
+
+      globalStore.updatePaymentStatus(selectedPayment.id, 'refund_pending', {
+        reason: reasonLabel,
+        notes: validation.trimmedNotes,
+      });
+
+      showToast('Refund request submitted successfully. Billing team review ETA: 3-5 business days.', 'success');
+      onClose();
+    } catch (error) {
+      const errorMessage = error instanceof Error
+        ? error.message
+        : 'Unable to submit refund request right now. Please try again.';
+      setBackendError(errorMessage);
+      showToast(errorMessage, 'error');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleCancelRefundRequest = async () => {
+    if (!selectedPayment) {
+      showToast('No refund request is available to cancel.', 'error');
+      return;
+    }
+
+    if (!selectedPayment.cashfreeOrderId) {
+      const missingOrderMessage = 'Refund cancellation failed because backend payment reference is missing.';
+      setBackendError(missingOrderMessage);
+      showToast(missingOrderMessage, 'error');
+      return;
+    }
+
+    setSubmitting(true);
+    setBackendError('');
+    try {
+      await cancelRefundByOrder(selectedPayment.cashfreeOrderId);
+
+      globalStore.updatePaymentStatus(selectedPayment.id, 'refund_cancelled', {
+        notes: notes.trim(),
+      });
+
+      showToast('Refund request cancelled successfully.', 'info');
+      onClose();
+    } catch (error) {
+      const errorMessage = error instanceof Error
+        ? error.message
+        : 'Unable to cancel refund request right now. Please try again.';
+      setBackendError(errorMessage);
+      showToast(errorMessage, 'error');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  if (!service) return null;
+
+  return (
+    <Modal isOpen={isOpen} onClose={onClose} title="Refund Request" size="md">
+      <div className="space-y-5">
+        <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+          <div className="text-xs text-slate-500 uppercase tracking-wider mb-2">Service Details</div>
+          <div className="space-y-1 text-sm text-slate-700">
+            <div className="font-bold text-slate-900">{service.name}</div>
+            <div>Plan: {service.plan}</div>
+            <div>Refund Amount (reference): ₹{service.renewalCost}</div>
+            {selectedPayment?.orderId && (
+              <div className="text-xs text-slate-500 pt-1">Order: {selectedPayment.orderId}</div>
+            )}
+          </div>
+        </div>
+
+        <div className="rounded-xl border border-blue-100 bg-blue-50 p-3 text-xs text-blue-700">
+          Refunds are reviewed by billing support. Provide complete reason, contact details, and policy acknowledgement for faster processing.
+          <div className="mt-1">
+            Once approved, the gateway processes a full refund to the original payment source (bank-linked account/card/UPI used for payment).
+          </div>
+        </div>
+
+        {!selectedPayment && (
+          <div className="rounded-xl bg-amber-50 border border-amber-200 p-3 text-xs text-amber-700">
+            No eligible payment found for this service under your account.
+          </div>
+        )}
+
+        {selectedPayment && (
+          <div className="rounded-xl bg-white border border-slate-200 p-3 flex items-center justify-between">
+            <span className="text-xs font-bold text-slate-500 uppercase tracking-wider">Refund Status</span>
+            <Badge
+              className={cn(
+                'text-[10px] uppercase',
+                selectedPaymentStatus === 'completed' ? 'bg-emerald-100 text-emerald-700' :
+                selectedPaymentStatus === 'refund_pending' ? 'bg-amber-100 text-amber-700' :
+                selectedPaymentStatus === 'refund_cancelled' ? 'bg-slate-100 text-slate-700' :
+                selectedPaymentStatus === 'refunded' ? 'bg-purple-100 text-purple-700' :
+                'bg-red-100 text-red-700'
+              )}
+            >
+              {(selectedPaymentStatus || 'failed').replace('_', ' ')}
+            </Badge>
+          </div>
+        )}
+
+        {backendError && (
+          <div className="rounded-xl bg-red-50 border border-red-200 p-3 text-xs text-red-700">
+            {backendError}
+          </div>
+        )}
+
+        {canRequestRefund && (
+          <>
+            <div>
+              <label className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2 block">Refund Reason</label>
+              <select
+                value={reason}
+                onChange={(event) => setReason(event.target.value)}
+                className="w-full h-11 px-3 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                {REFUND_REASON_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>{option.label}</option>
+                ))}
+              </select>
+              {formErrors.reason && <p className="text-xs text-red-500 mt-1">{formErrors.reason}</p>}
+            </div>
+
+            <div>
+              <label className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2 block">Detailed Explanation</label>
+              <textarea
+                value={notes}
+                onChange={(event) => setNotes(event.target.value)}
+                placeholder="Describe what happened and why you are requesting a refund"
+                className="w-full min-h-[110px] px-3 py-2 border border-slate-200 rounded-xl text-sm resize-none focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+              {formErrors.notes && <p className="text-xs text-red-500 mt-1">{formErrors.notes}</p>}
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div className="space-y-1">
+                <label className="text-xs font-bold text-slate-500 uppercase tracking-wider block">Contact Email</label>
+                <Input
+                  type="email"
+                  value={contactEmail}
+                  onChange={(event) => setContactEmail(event.target.value)}
+                  className="h-11"
+                />
+                {formErrors.contactEmail && <p className="text-xs text-red-500">{formErrors.contactEmail}</p>}
+              </div>
+              <div className="space-y-1">
+                <label className="text-xs font-bold text-slate-500 uppercase tracking-wider block">Contact Phone</label>
+                <Input
+                  value={contactPhone}
+                  onChange={(event) => setContactPhone(event.target.value)}
+                  className="h-11"
+                />
+                {formErrors.contactPhone && <p className="text-xs text-red-500">{formErrors.contactPhone}</p>}
+              </div>
+            </div>
+
+            <label className="flex items-start gap-2 p-3 rounded-xl border border-slate-200 bg-slate-50 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={policyAccepted}
+                onChange={(event) => setPolicyAccepted(event.target.checked)}
+                className="mt-0.5 size-4 rounded border-slate-300"
+              />
+              <span className="text-xs text-slate-600">
+                I confirm that the refund details are accurate and understand that approval depends on billing policy verification.
+              </span>
+            </label>
+            {formErrors.policy && <p className="text-xs text-red-500 -mt-2">{formErrors.policy}</p>}
+          </>
+        )}
+
+        {canCancelRequest && (
+          <div className="rounded-xl bg-blue-50 border border-blue-100 p-3 text-xs text-blue-700">
+            Your refund request is currently pending. You can cancel it from here.
+          </div>
+        )}
+
+        {isAlreadyRefunded && (
+          <div className="rounded-xl bg-purple-50 border border-purple-100 p-3 text-xs text-purple-700">
+            This payment is already refunded and cannot be modified.
+          </div>
+        )}
+
+        <div className="flex gap-3">
+          <Button variant="outline" onClick={onClose} className="flex-1">Close</Button>
+
+          {canRequestRefund && (
+            <Button onClick={handleSubmitRefundRequest} loading={submitting} className="flex-1 gap-2">
+              <History size={16} /> Submit Refund
+            </Button>
+          )}
+
+          {canCancelRequest && (
+            <Button variant="outline" onClick={handleCancelRefundRequest} loading={submitting} className="flex-1 gap-2">
+              <X size={16} /> Cancel Request
+            </Button>
+          )}
+        </div>
+      </div>
+    </Modal>
+  );
+};
+
 // Invite Member Modal
 const InviteMemberModal = ({ isOpen, onClose }: { isOpen: boolean; onClose: () => void }) => {
-  const { setTeamMembers, showToast } = useDashboard();
+  const { setTeamMembers, showToast, currentUser } = useDashboard();
   const [email, setEmail] = useState('');
   const [name, setName] = useState('');
-  const [role, setRole] = useState('Viewer');
+  const [role, setRole] = useState<TeamAccessRole>('Viewer');
   const [sending, setSending] = useState(false);
 
   const handleInvite = async () => {
-    if (!email || !name) return;
+    const safeEmail = String(email || '').trim().toLowerCase();
+    const safeName = String(name || '').trim();
+    if (!safeEmail || !safeName) return;
+
+    if (!/^\S+@\S+\.\S+$/.test(safeEmail)) {
+      showToast('Enter a valid email address before sending the invite.', 'error');
+      return;
+    }
+
+    const { userId: ownerUserId, email: ownerEmail, name: ownerName } = getDashboardUserIdentity(currentUser);
+    if (!ownerUserId || !ownerEmail) {
+      showToast('Your session is missing owner details. Please sign in again.', 'error');
+      return;
+    }
+
+    if (safeEmail === ownerEmail) {
+      showToast('You cannot invite your own account as a team member.', 'error');
+      return;
+    }
+
     setSending(true);
-    await new Promise(r => setTimeout(r, 1000));
 
-    const newMember: TeamMember = {
-      id: Date.now(),
-      name,
-      email,
-      role,
-      avatar: null,
-      status: 'pending',
-      lastActive: 'Invitation sent'
-    };
+    try {
+      const result = await createTeamAccessInvite({
+        ownerUserId,
+        ownerEmail,
+        ownerName,
+        memberEmail: safeEmail,
+        memberName: safeName,
+        role,
+      });
 
-    setTeamMembers(prev => [...prev, newMember]);
-    setSending(false);
-    showToast(`Invitation sent to ${email}!`, 'success');
-    setEmail('');
-    setName('');
-    setRole('Viewer');
-    onClose();
+      const mappedMember = mapTeamAccessRecordToMember(result.invitation);
+
+      setTeamMembers((prev) => {
+        const existingIndex = prev.findIndex((member) => {
+          const memberKey = String(member.invitationId || member.id || '').trim();
+          return memberKey === String(mappedMember.invitationId || '') || member.email.toLowerCase() === mappedMember.email;
+        });
+
+        if (existingIndex === -1) {
+          return [mappedMember, ...prev];
+        }
+
+        const next = [...prev];
+        next[existingIndex] = mappedMember;
+        return next;
+      });
+
+      if (result.delivery === 'sent') {
+        showToast(`Invitation email sent to ${safeEmail}.`, 'success');
+      } else if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+        try {
+          await navigator.clipboard.writeText(result.acceptUrl);
+          showToast('Invite created in preview mode. Accept link copied to clipboard.', 'info');
+        } catch {
+          showToast('Invite created in preview mode. Configure email provider keys to send real emails.', 'info');
+        }
+      } else {
+        showToast('Invite created in preview mode. Configure email provider keys to send real emails.', 'info');
+      }
+
+      setEmail('');
+      setName('');
+      setRole('Viewer');
+      onClose();
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : 'Unable to send invitation right now.', 'error');
+    } finally {
+      setSending(false);
+    }
   };
 
   return (
@@ -707,19 +1586,21 @@ const InviteMemberModal = ({ isOpen, onClose }: { isOpen: boolean; onClose: () =
             <label className="text-xs font-bold text-slate-400 uppercase tracking-wider">Role</label>
             <select 
               value={role} 
-              onChange={(e) => setRole(e.target.value)}
+              onChange={(e) => setRole(normalizeTeamAccessRole(e.target.value))}
               className="w-full h-12 px-4 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
             >
-              <option value="Admin">Admin - Full access</option>
-              <option value="Editor">Editor - Limited access</option>
-              <option value="Viewer">Viewer - View only</option>
+              {TEAM_ACCESS_ROLES.map((teamRole) => (
+                <option key={teamRole} value={teamRole}>
+                  {teamRole} {teamRole === 'Admin' ? '- Full access' : teamRole === 'Editor' ? '- Limited access' : '- View only'}
+                </option>
+              ))}
             </select>
           </div>
         </div>
 
         <div className="flex gap-3">
           <Button variant="outline" onClick={onClose} className="flex-1">Cancel</Button>
-          <Button onClick={handleInvite} loading={sending} disabled={!email || !name} className="flex-1 gap-2">
+          <Button onClick={handleInvite} loading={sending} disabled={!email.trim() || !name.trim()} className="flex-1 gap-2">
             <Mail size={18} /> Send Invitation
           </Button>
         </div>
@@ -730,22 +1611,51 @@ const InviteMemberModal = ({ isOpen, onClose }: { isOpen: boolean; onClose: () =
 
 // Edit Member Modal
 const EditMemberModal = ({ isOpen, onClose, member }: { isOpen: boolean; onClose: () => void; member: TeamMember | null }) => {
-  const { setTeamMembers, showToast } = useDashboard();
-  const [role, setRole] = useState(member?.role || 'Viewer');
+  const { setTeamMembers, showToast, currentUser } = useDashboard();
+  const [role, setRole] = useState<TeamAccessRole>(normalizeTeamAccessRole(member?.role || 'Viewer'));
   const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    setRole(normalizeTeamAccessRole(member?.role || 'Viewer'));
+  }, [member?.id, member?.role]);
 
   const handleSave = async () => {
     if (!member) return;
+
+    const nextRole = normalizeTeamAccessRole(role);
     setSaving(true);
-    await new Promise(r => setTimeout(r, 800));
 
-    setTeamMembers(prev => prev.map(m => 
-      m.id === member.id ? { ...m, role } : m
-    ));
+    try {
+      if (member.invitationId) {
+        const { userId: ownerUserId, email: ownerEmail } = getDashboardUserIdentity(currentUser);
+        if (!ownerUserId) {
+          throw new Error('Missing owner identity. Please sign in again.');
+        }
 
-    setSaving(false);
-    showToast(`${member.name}'s role updated to ${role}`, 'success');
-    onClose();
+        const updatedMember = await updateTeamAccessMemberRole(member.invitationId, {
+          ownerUserId,
+          ownerEmail: ownerEmail || undefined,
+          role: nextRole,
+        });
+
+        const mappedMember = mapTeamAccessRecordToMember(updatedMember);
+        setTeamMembers((prev) =>
+          prev.map((item) => {
+            const itemKey = String(item.invitationId || item.id || '').trim();
+            return itemKey === String(mappedMember.invitationId || '').trim() ? mappedMember : item;
+          })
+        );
+      } else {
+        setTeamMembers((prev) => prev.map((item) => (item.id === member.id ? { ...item, role: nextRole } : item)));
+      }
+
+      showToast(`${member.name}'s role updated to ${nextRole}`, 'success');
+      onClose();
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : 'Unable to update member role right now.', 'error');
+    } finally {
+      setSaving(false);
+    }
   };
 
   if (!member) return null;
@@ -767,12 +1677,14 @@ const EditMemberModal = ({ isOpen, onClose, member }: { isOpen: boolean; onClose
           <label className="text-xs font-bold text-slate-400 uppercase tracking-wider">Role</label>
           <select 
             value={role} 
-            onChange={(e) => setRole(e.target.value)}
+            onChange={(e) => setRole(normalizeTeamAccessRole(e.target.value))}
             className="w-full h-12 px-4 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
           >
-            <option value="Admin">Admin - Full access</option>
-            <option value="Editor">Editor - Limited access</option>
-            <option value="Viewer">Viewer - View only</option>
+            {TEAM_ACCESS_ROLES.map((teamRole) => (
+              <option key={teamRole} value={teamRole}>
+                {teamRole} {teamRole === 'Admin' ? '- Full access' : teamRole === 'Editor' ? '- Limited access' : '- View only'}
+              </option>
+            ))}
           </select>
         </div>
 
@@ -788,15 +1700,18 @@ const EditMemberModal = ({ isOpen, onClose, member }: { isOpen: boolean; onClose
 };
 
 // Delete Confirmation Modal
-const DeleteConfirmModal = ({ isOpen, onClose, onConfirm, title, message }: { isOpen: boolean; onClose: () => void; onConfirm: () => void; title: string; message: string }) => {
+const DeleteConfirmModal = ({ isOpen, onClose, onConfirm, title, message }: { isOpen: boolean; onClose: () => void; onConfirm: () => void | Promise<void>; title: string; message: string }) => {
   const [deleting, setDeleting] = useState(false);
 
   const handleDelete = async () => {
     setDeleting(true);
-    await new Promise(r => setTimeout(r, 800));
-    onConfirm();
-    setDeleting(false);
-    onClose();
+
+    try {
+      await Promise.resolve(onConfirm());
+      onClose();
+    } finally {
+      setDeleting(false);
+    }
   };
 
   return (
@@ -826,7 +1741,7 @@ const BillingModal = ({ isOpen, onClose }: { isOpen: boolean; onClose: () => voi
         <div className="grid grid-cols-3 gap-4">
           <div className="p-4 bg-blue-50 rounded-xl">
             <div className="text-xs text-blue-600 uppercase tracking-wider mb-1">Monthly Spend</div>
-            <div className="text-2xl font-black text-slate-900">${Math.round(totalMonthly)}</div>
+            <div className="text-2xl font-black text-slate-900">₹{Math.round(totalMonthly)}</div>
           </div>
           <div className="p-4 bg-emerald-50 rounded-xl">
             <div className="text-xs text-emerald-600 uppercase tracking-wider mb-1">Active Services</div>
@@ -876,7 +1791,7 @@ const BillingModal = ({ isOpen, onClose }: { isOpen: boolean; onClose: () => voi
                     invoice.status === 'pending' ? 'bg-orange-100 text-orange-700' : 
                     'bg-red-100 text-red-700'
                   )}>{invoice.status}</Badge>
-                  <span className="font-bold text-slate-900">${invoice.total.toFixed(2)}</span>
+                  <span className="font-bold text-slate-900">₹{invoice.total.toFixed(2)}</span>
                   <Button variant="ghost" size="icon" className="text-slate-400 hover:text-blue-600">
                     <Download size={16} />
                   </Button>
@@ -1061,7 +1976,7 @@ const CartModal = ({ isOpen, onClose }: { isOpen: boolean; onClose: () => void }
                     </div>
                   </div>
                   <div className="text-right">
-                    <div className="font-bold text-slate-900">${item.price}</div>
+                    <div className="font-bold text-slate-900">₹{item.price}</div>
                     <div className="text-xs text-slate-400">/month</div>
                   </div>
                   <button 
@@ -1078,15 +1993,15 @@ const CartModal = ({ isOpen, onClose }: { isOpen: boolean; onClose: () => void }
             <div className="border-t border-slate-200 pt-4 space-y-3">
               <div className="flex justify-between text-sm">
                 <span className="text-slate-500">Subtotal ({cart.length} items)</span>
-                <span className="font-medium text-slate-900">${subtotal.toFixed(2)}</span>
+                <span className="font-medium text-slate-900">₹{subtotal.toFixed(2)}</span>
               </div>
               <div className="flex justify-between text-sm">
                 <span className="text-slate-500">GST (18%)</span>
-                <span className="font-medium text-slate-900">${tax.toFixed(2)}</span>
+                <span className="font-medium text-slate-900">₹{tax.toFixed(2)}</span>
               </div>
               <div className="flex justify-between text-lg font-bold border-t border-slate-200 pt-3">
                 <span className="text-slate-900">Total</span>
-                <span className="text-blue-600">${total.toFixed(2)}</span>
+                <span className="text-blue-600">₹{total.toFixed(2)}</span>
               </div>
             </div>
 
@@ -1114,11 +2029,12 @@ const CartModal = ({ isOpen, onClose }: { isOpen: boolean; onClose: () => void }
 
 // Checkout Modal
 const CheckoutModal = ({ isOpen, onClose }: { isOpen: boolean; onClose: () => void }) => {
-  const { cart, clearCart, addOrder, setPurchasedServices, showToast, invoices } = useDashboard();
-  const [step, setStep] = useState<'summary' | 'billing' | 'payment' | 'processing' | 'success'>('summary');
+  const { cart, addToCart, clearCart, addOrder, addInvoice, setPurchasedServices, showToast, invoices, currentUser } = useDashboard();
+  const [step, setStep] = useState<'summary' | 'billing' | 'processing' | 'success'>('summary');
   const [billingInfo, setBillingInfo] = useState({
     name: '',
     email: '',
+    phone: '',
     company: '',
     address: '',
     city: '',
@@ -1127,60 +2043,81 @@ const CheckoutModal = ({ isOpen, onClose }: { isOpen: boolean; onClose: () => vo
     country: 'India',
     gst: ''
   });
-  const [paymentMethod, setPaymentMethod] = useState<'card' | 'upi' | 'netbanking'>('card');
-  const [cardInfo, setCardInfo] = useState({ number: '', expiry: '', cvv: '', name: '' });
-  const [upiId, setUpiId] = useState('');
-  const [selectedBank, setSelectedBank] = useState('');
+  const [paymentMethod] = useState<'card' | 'upi' | 'netbanking'>('card');
   const [processing, setProcessing] = useState(false);
   const [orderComplete, setOrderComplete] = useState<Order | null>(null);
+  const [activeCashfreeOrderId, setActiveCashfreeOrderId] = useState<string | null>(null);
+  const [validationErrors, setValidationErrors] = useState<Record<string, string>>({});
 
   const subtotal = cart.reduce((acc, item) => acc + item.price, 0);
   const tax = subtotal * 0.18;
   const total = subtotal + tax;
+  const currentUserId = String(currentUser?.id || '').trim();
+  const currentUserEmail = String(currentUser?.email || '').trim().toLowerCase();
+  const currentUserName =
+    String(currentUser?.user_metadata?.full_name || '').trim() ||
+    `${String(currentUser?.user_metadata?.first_name || '').trim()} ${String(currentUser?.user_metadata?.last_name || '').trim()}`.trim() ||
+    (currentUserEmail ? currentUserEmail.split('@')[0] : 'User');
 
-  const handlePayment = async () => {
-    setStep('processing');
-    setProcessing(true);
+  const normalizeDigits = (value: string) => value.replace(/\D/g, '');
 
-    // Simulate Cashfree payment processing
-    await new Promise(r => setTimeout(r, 2500));
+  const validateCheckoutInput = () => {
+    const errors: Record<string, string> = {};
 
-    const orderNumber = `ORD-${new Date().getFullYear()}-${String(Math.floor(Math.random() * 9999)).padStart(4, '0')}`;
-    const paymentId = `cf_pay_${Date.now()}`;
+    if (!billingInfo.name.trim() || billingInfo.name.trim().length < 2) {
+      errors.name = 'Enter a valid full name.';
+    } else if (!/^[a-zA-Z\s.'-]+$/.test(billingInfo.name.trim())) {
+      errors.name = 'Name can only contain letters and spaces.';
+    }
 
-    const newOrder: Order = {
-      id: `ord_${Date.now()}`,
-      orderNumber,
-      date: new Date().toISOString(),
-      items: cart,
-      subtotal,
-      tax,
-      total,
-      status: 'completed',
-      paymentMethod: `Cashfree - ${paymentMethod.toUpperCase()}`,
-      paymentId
-    };
+    if (!/^\S+@\S+\.\S+$/.test(billingInfo.email.trim())) {
+      errors.email = 'Enter a valid email address.';
+    }
 
-    // Sync payment to admin store
-    const firstItem = cart[0];
-    globalStore.addPayment({
-      userId: 'current_user',
-      userName: billingInfo.name || 'User',
-      userEmail: billingInfo.email || 'user@example.com',
-      amount: total,
-      status: 'completed',
-      method: paymentMethod === 'card' ? 'Card' : paymentMethod === 'upi' ? 'UPI' : 'Net Banking',
-      date: new Date().toISOString(),
-      service: firstItem?.serviceName || 'Service Bundle',
-      plan: firstItem?.plan || 'Custom',
-      items: cart.map(item => ({
-        name: item.serviceName,
-        plan: item.plan,
-        price: item.price
-      }))
-    });
+    const phoneDigits = normalizeDigits(billingInfo.phone);
+    if (!/^\d{10,15}$/.test(phoneDigits)) {
+      errors.phone = 'Enter a valid phone number.';
+    }
 
-    // Add services to purchased
+    if (!billingInfo.company.trim()) {
+      errors.company = 'Company name is required.';
+    }
+    if (!billingInfo.address.trim()) {
+      errors.address = 'Address is required.';
+    }
+    if (!billingInfo.city.trim()) {
+      errors.city = 'City is required.';
+    }
+    if (!billingInfo.zip.trim() || billingInfo.zip.trim().length < 4) {
+      errors.zip = 'Enter a valid ZIP/PIN code.';
+    }
+
+    setValidationErrors(errors);
+    return { isValid: Object.keys(errors).length === 0, phoneDigits };
+  };
+
+  useEffect(() => {
+    if (!isOpen) return;
+
+    setBillingInfo((previous) => ({
+      ...previous,
+      name: previous.name || currentUserName,
+      email: previous.email || currentUserEmail,
+    }));
+  }, [isOpen, currentUserEmail, currentUserName]);
+
+  const getCartWithIcons = (items: Omit<CartItem, 'icon'>[]): CartItem[] => {
+    return items.map(item => ({
+      ...item,
+      icon: SERVICE_VISUALS[item.serviceId]?.icon || <Package className="size-6" />,
+    }));
+  };
+
+  const normalizePaymentMethod = (method: 'card' | 'upi' | 'netbanking') => {
+    return method === 'card' ? 'Card' : method === 'upi' ? 'UPI' : 'Net Banking';
+  };
+
+  const addPurchasedServicesFromItems = (items: Omit<CartItem, 'icon'>[], cashfreeOrderId?: string) => {
     const iconMap: Record<string, React.ReactNode> = {
       'sales': <TrendingUp className="size-5 text-white" />,
       'voice': <Phone className="size-5 text-white" />,
@@ -1199,9 +2136,11 @@ const CheckoutModal = ({ isOpen, onClose }: { isOpen: boolean; onClose: () => vo
     const expiryDate = new Date(today);
     expiryDate.setFullYear(expiryDate.getFullYear() + 1);
 
-    cart.forEach(item => {
+    items.forEach(item => {
       const newService: Service = {
         id: Date.now() + Math.random(),
+        serviceId: item.serviceId,
+        cashfreeOrderId,
         name: item.serviceName,
         plan: item.plan,
         status: 'active',
@@ -1209,24 +2148,312 @@ const CheckoutModal = ({ isOpen, onClose }: { isOpen: boolean; onClose: () => vo
         color: item.serviceColor,
         purchaseDate: today.toISOString().split('T')[0],
         expiryDate: expiryDate.toISOString().split('T')[0],
+        lastUsageSyncDate: today.toISOString().split('T')[0],
         renewalCost: item.price * 12,
         features: item.features,
         usage: { used: 0, limit: 10000, unit: unitMap[item.serviceId] || 'units/month' }
       };
       setPurchasedServices(prev => [...prev, newService]);
     });
+  };
+
+  const finalizeSuccessfulPayment = async (
+    orderId: string,
+    paymentId: string | undefined,
+    method: 'card' | 'upi' | 'netbanking',
+    checkoutData: {
+      cart: Omit<CartItem, 'icon'>[];
+      subtotal: number;
+      tax: number;
+      total: number;
+      billingInfo: typeof billingInfo;
+    },
+    options?: {
+      intent?: 'purchase' | 'renewal';
+      renewalServiceId?: number;
+    }
+  ) => {
+    const orderNumber = `ORD-${new Date().getFullYear()}-${String(Math.floor(Math.random() * 9999)).padStart(4, '0')}`;
+    const hydratedCart = getCartWithIcons(checkoutData.cart);
+    const effectiveUserId = currentUserId || checkoutData.billingInfo.email.trim().toLowerCase();
+    const effectiveUserEmail = (currentUserEmail || checkoutData.billingInfo.email).trim().toLowerCase();
+    const effectiveUserName = checkoutData.billingInfo.name?.trim() || currentUserName;
+
+    const newOrder: Order = {
+      id: `ord_${Date.now()}`,
+      orderNumber,
+      date: new Date().toISOString(),
+      items: hydratedCart,
+      subtotal: checkoutData.subtotal,
+      tax: checkoutData.tax,
+      total: checkoutData.total,
+      status: 'completed',
+      paymentMethod: `Cashfree - ${method.toUpperCase()}`,
+      paymentId: paymentId || orderId
+    };
+
+    globalStore.addPayment({
+      userId: effectiveUserId,
+      cashfreeOrderId: orderId,
+      userName: effectiveUserName || 'User',
+      userEmail: effectiveUserEmail || 'user@example.com',
+      amount: checkoutData.total,
+      status: 'completed',
+      method: normalizePaymentMethod(method),
+      date: new Date().toISOString(),
+      service: hydratedCart[0]?.serviceName || 'Service Bundle',
+      plan: hydratedCart[0]?.plan || 'Custom',
+      items: hydratedCart.map(item => ({
+        name: item.serviceName,
+        plan: item.plan,
+        price: item.price
+      }))
+    });
+
+    if (options?.intent === 'renewal' && typeof options.renewalServiceId === 'number') {
+      let renewed = false;
+      const today = new Date();
+      setPurchasedServices((prev) =>
+        prev.map((service) => {
+          if (service.id !== options.renewalServiceId) return service;
+
+          renewed = true;
+          const currentExpiry = new Date(service.expiryDate);
+          const baseDate = Number.isNaN(currentExpiry.getTime()) || currentExpiry < today ? today : currentExpiry;
+          const newExpiry = new Date(baseDate);
+          newExpiry.setFullYear(newExpiry.getFullYear() + 1);
+
+          return {
+            ...service,
+            status: 'active',
+            expiryDate: newExpiry.toISOString().split('T')[0],
+            cashfreeOrderId: orderId,
+          };
+        })
+      );
+
+      if (!renewed) {
+        addPurchasedServicesFromItems(checkoutData.cart, orderId);
+      }
+    } else {
+      addPurchasedServicesFromItems(checkoutData.cart, orderId);
+    }
 
     addOrder(newOrder);
+
+    const paidAt = new Date().toISOString();
+    const invoiceDate = new Date(paidAt);
+    const dueDate = new Date(invoiceDate);
+    dueDate.setDate(dueDate.getDate() + 1);
+    const newInvoice: Invoice = {
+      id: `inv_${Date.now()}`,
+      invoiceNumber: `INV-${invoiceDate.getFullYear()}-${String(Math.floor(Math.random() * 99999)).padStart(5, '0')}`,
+      date: invoiceDate.toISOString(),
+      dueDate: dueDate.toISOString(),
+      items: hydratedCart.map((item) => ({
+        name: item.serviceName,
+        plan: item.plan,
+        quantity: 1,
+        unitPrice: item.price,
+        total: item.price,
+      })),
+      subtotal: checkoutData.subtotal,
+      tax: checkoutData.tax,
+      total: checkoutData.total,
+      status: 'paid',
+      paidDate: paidAt,
+      customerInfo: {
+        name: checkoutData.billingInfo.name,
+        email: checkoutData.billingInfo.email,
+        company: checkoutData.billingInfo.company,
+        address: `${checkoutData.billingInfo.address}, ${checkoutData.billingInfo.city}, ${checkoutData.billingInfo.zip}`,
+        gst: checkoutData.billingInfo.gst || undefined,
+      },
+    };
+    addInvoice(newInvoice);
+
+    localStorage.setItem('volosist_last_billing_info', JSON.stringify(checkoutData.billingInfo));
+
     setOrderComplete(newOrder);
     setStep('success');
-    setProcessing(false);
+
+    try {
+      const normalizedBillingPhone = normalizeDigits(checkoutData.billingInfo.phone);
+
+      await upsertPayment({
+        user_id: currentUserId || effectiveUserId,
+        user_name: effectiveUserName || 'User',
+        user_email: effectiveUserEmail || undefined,
+        user_phone: normalizedBillingPhone || undefined,
+        plan_id: hydratedCart[0]?.serviceId || 'bundle',
+        plan_name: hydratedCart.map(i => `${i.serviceName} (${i.plan})`).join(', '),
+        amount: Math.round(checkoutData.total * 100),
+        currency: 'INR',
+        cashfree_order_id: orderId,
+        cashfree_payment_id: paymentId,
+        status: 'success',
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      });
+    } catch (error) {
+      console.warn('[checkout] payment upsert skipped:', error);
+    }
   };
+
+  const handlePayment = async () => {
+    if (!currentUserId || !currentUserEmail) {
+      showToast('Your session was not detected. Please sign in again to continue.', 'error');
+      return;
+    }
+
+    const { isValid, phoneDigits } = validateCheckoutInput();
+    if (!isValid) {
+      showToast('Please enter valid billing and payment details before checkout.', 'error');
+      setStep('billing');
+      return;
+    }
+
+    setStep('processing');
+    setProcessing(true);
+
+    try {
+      const orderId = `cf_${Date.now()}_${Math.floor(Math.random() * 10000)}`;
+      const returnUrl = `${window.location.origin}/dashboard?cf_return=1&cf_order_id={order_id}`;
+      const cartForStorage = cart.map(({ icon, ...rest }) => rest);
+      const renewalServiceIdRaw = localStorage.getItem('volosist_pending_renewal_service');
+      const renewalServiceId = renewalServiceIdRaw ? Number(renewalServiceIdRaw) : undefined;
+      const isRenewalIntent = typeof renewalServiceId === 'number' && Number.isFinite(renewalServiceId);
+
+      const cfOrder = await createCashfreeOrder({
+        orderId,
+        currency: 'INR',
+        customerName: billingInfo.name,
+        customerEmail: billingInfo.email,
+        customerPhone: phoneDigits,
+        planId: cartForStorage[0]?.serviceId || 'bundle',
+        planName: cartForStorage.map(i => `${i.serviceName} (${i.plan})`).join(', '),
+        returnUrl,
+        cartItems: cartForStorage.map((item) => ({
+          serviceId: item.serviceId,
+          plan: item.plan,
+          billingCycle: item.billingCycle,
+          quantity: isRenewalIntent && item.billingCycle === 'yearly' ? 12 : 1,
+        })),
+      });
+
+      const serverSubtotal = Number((cfOrder.subtotal ?? subtotal).toFixed(2));
+      const serverTax = Number((cfOrder.tax ?? tax).toFixed(2));
+      const serverTotal = Number((cfOrder.order_amount ?? total).toFixed(2));
+
+      localStorage.setItem('cashfree_pending_checkout', JSON.stringify({
+        orderId: cfOrder.order_id,
+        paymentMethod,
+        billingInfo,
+        subtotal: serverSubtotal,
+        tax: serverTax,
+        total: serverTotal,
+        cart: cartForStorage,
+        intent: isRenewalIntent ? 'renewal' : 'purchase',
+        renewalServiceId: isRenewalIntent ? renewalServiceId : undefined,
+        createdAt: new Date().toISOString(),
+      }));
+
+      if (isRenewalIntent) {
+        localStorage.removeItem('volosist_pending_renewal_service');
+      }
+
+      setActiveCashfreeOrderId(cfOrder.order_id);
+      await openCashfreeCheckout(cfOrder.payment_session_id, returnUrl, cfOrder.payment_link);
+    } catch (error: any) {
+      setProcessing(false);
+      setStep('billing');
+      showToast(error?.message || 'Failed to start payment. Please try again.', 'error');
+    }
+  };
+
+  useEffect(() => {
+    if (!isOpen) return;
+
+    const params = new URLSearchParams(window.location.search);
+    const orderIdFromReturn = params.get('cf_order_id');
+    const isCashfreeReturn = params.get('cf_return') === '1' && Boolean(orderIdFromReturn);
+
+    if (!isCashfreeReturn || processing) return;
+
+    const verifyAndFinalize = async () => {
+      setStep('processing');
+      setProcessing(true);
+
+      try {
+        const verification = await verifyCashfreePayment(orderIdFromReturn as string);
+        const pendingRaw = localStorage.getItem('cashfree_pending_checkout');
+
+        if (!pendingRaw) {
+          throw new Error('Checkout session expired. Please try payment again.');
+        }
+
+        const pending = JSON.parse(pendingRaw) as {
+          orderId: string;
+          paymentMethod: 'card' | 'upi' | 'netbanking';
+          billingInfo: typeof billingInfo;
+          subtotal: number;
+          tax: number;
+          total: number;
+          cart: Omit<CartItem, 'icon'>[];
+          intent?: 'purchase' | 'renewal';
+          renewalServiceId?: number;
+        };
+
+        const isSuccessful = verification.payment_status === 'SUCCESS' || verification.order_status === 'PAID';
+        if (!isSuccessful) {
+          throw new Error(`Payment not completed. Current status: ${verification.payment_status || verification.order_status}`);
+        }
+
+        clearCart();
+        pending.cart.forEach(item => addToCart({ ...item, icon: SERVICE_VISUALS[item.serviceId]?.icon || <Package className="size-6" /> }));
+
+        await finalizeSuccessfulPayment(
+          verification.order_id,
+          verification.payment_id,
+          pending.paymentMethod,
+          {
+            cart: pending.cart,
+            subtotal: pending.subtotal,
+            tax: pending.tax,
+            total: pending.total,
+            billingInfo: pending.billingInfo,
+          },
+          {
+            intent: pending.intent,
+            renewalServiceId: pending.renewalServiceId,
+          }
+        );
+
+        localStorage.removeItem('cashfree_pending_checkout');
+        setActiveCashfreeOrderId(verification.order_id);
+        showToast('Payment verified and subscription activated.', 'success');
+      } catch (error: any) {
+        setStep('billing');
+        localStorage.removeItem('cashfree_pending_checkout');
+        showToast(error?.message || 'Unable to verify payment. Please retry verification.', 'error');
+      } finally {
+        setProcessing(false);
+        const url = new URL(window.location.href);
+        url.searchParams.delete('cf_return');
+        url.searchParams.delete('cf_order_id');
+        window.history.replaceState({}, '', `${url.pathname}${url.search}`);
+      }
+    };
+
+    verifyAndFinalize();
+  }, [isOpen]);
 
   const handleClose = () => {
     if (step === 'success') {
       clearCart();
       setStep('summary');
       setOrderComplete(null);
+      setActiveCashfreeOrderId(null);
     }
     onClose();
   };
@@ -1248,19 +2475,19 @@ const CheckoutModal = ({ isOpen, onClose }: { isOpen: boolean; onClose: () => vo
       {/* Progress Steps */}
       {step !== 'success' && step !== 'processing' && (
         <div className="flex items-center justify-center gap-2 mb-6">
-          {['summary', 'billing', 'payment'].map((s, idx) => (
+          {['summary', 'billing'].map((s, idx) => (
             <React.Fragment key={s}>
               <div className={cn(
                 "size-8 rounded-full flex items-center justify-center text-sm font-bold",
                 step === s ? 'bg-blue-600 text-white' : 
-                ['summary', 'billing', 'payment'].indexOf(step) > idx ? 'bg-emerald-500 text-white' : 
+                ['summary', 'billing'].indexOf(step) > idx ? 'bg-emerald-500 text-white' : 
                 'bg-slate-100 text-slate-400'
               )}>
-                {['summary', 'billing', 'payment'].indexOf(step) > idx ? <Check size={16} /> : idx + 1}
+                {['summary', 'billing'].indexOf(step) > idx ? <Check size={16} /> : idx + 1}
               </div>
-              {idx < 2 && <div className={cn(
+              {idx < 1 && <div className={cn(
                 "w-16 h-0.5",
-                ['summary', 'billing', 'payment'].indexOf(step) > idx ? 'bg-emerald-500' : 'bg-slate-200'
+                ['summary', 'billing'].indexOf(step) > idx ? 'bg-emerald-500' : 'bg-slate-200'
               )} />}
             </React.Fragment>
           ))}
@@ -1286,7 +2513,7 @@ const CheckoutModal = ({ isOpen, onClose }: { isOpen: boolean; onClose: () => vo
                       <div className="text-xs text-slate-400">{item.plan} Plan • Monthly</div>
                     </div>
                   </div>
-                  <div className="font-bold text-slate-900">${item.price}/mo</div>
+                  <div className="font-bold text-slate-900">₹{item.price}/mo</div>
                 </div>
               ))}
             </div>
@@ -1295,15 +2522,15 @@ const CheckoutModal = ({ isOpen, onClose }: { isOpen: boolean; onClose: () => vo
           <div className="bg-gradient-to-br from-blue-50 to-indigo-50 rounded-xl p-4 space-y-2">
             <div className="flex justify-between text-sm">
               <span className="text-slate-600">Subtotal</span>
-              <span className="font-medium">${subtotal.toFixed(2)}</span>
+              <span className="font-medium">₹{subtotal.toFixed(2)}</span>
             </div>
             <div className="flex justify-between text-sm">
               <span className="text-slate-600">GST (18%)</span>
-              <span className="font-medium">${tax.toFixed(2)}</span>
+              <span className="font-medium">₹{tax.toFixed(2)}</span>
             </div>
             <div className="flex justify-between text-lg font-bold border-t border-blue-200 pt-2 mt-2">
               <span>Total</span>
-              <span className="text-blue-600">${total.toFixed(2)}</span>
+              <span className="text-blue-600">₹{total.toFixed(2)}</span>
             </div>
           </div>
 
@@ -1328,22 +2555,32 @@ const CheckoutModal = ({ isOpen, onClose }: { isOpen: boolean; onClose: () => vo
               <div className="col-span-2 sm:col-span-1 space-y-2">
                 <label className="text-xs font-bold text-slate-400 uppercase">Email</label>
                 <Input type="email" value={billingInfo.email} onChange={e => setBillingInfo({...billingInfo, email: e.target.value})} className="h-11" />
+                {validationErrors.email && <p className="text-xs text-red-500">{validationErrors.email}</p>}
+              </div>
+              <div className="col-span-2 sm:col-span-1 space-y-2">
+                <label className="text-xs font-bold text-slate-400 uppercase">Phone</label>
+                <Input type="tel" value={billingInfo.phone} onChange={e => setBillingInfo({...billingInfo, phone: e.target.value})} className="h-11" />
+                {validationErrors.phone && <p className="text-xs text-red-500">{validationErrors.phone}</p>}
               </div>
               <div className="col-span-2 space-y-2">
                 <label className="text-xs font-bold text-slate-400 uppercase">Company</label>
                 <Input value={billingInfo.company} onChange={e => setBillingInfo({...billingInfo, company: e.target.value})} className="h-11" />
+                {validationErrors.company && <p className="text-xs text-red-500">{validationErrors.company}</p>}
               </div>
               <div className="col-span-2 space-y-2">
                 <label className="text-xs font-bold text-slate-400 uppercase">Address</label>
                 <Input value={billingInfo.address} onChange={e => setBillingInfo({...billingInfo, address: e.target.value})} className="h-11" />
+                {validationErrors.address && <p className="text-xs text-red-500">{validationErrors.address}</p>}
               </div>
               <div className="space-y-2">
                 <label className="text-xs font-bold text-slate-400 uppercase">City</label>
                 <Input value={billingInfo.city} onChange={e => setBillingInfo({...billingInfo, city: e.target.value})} className="h-11" />
+                {validationErrors.city && <p className="text-xs text-red-500">{validationErrors.city}</p>}
               </div>
               <div className="space-y-2">
                 <label className="text-xs font-bold text-slate-400 uppercase">ZIP Code</label>
                 <Input value={billingInfo.zip} onChange={e => setBillingInfo({...billingInfo, zip: e.target.value})} className="h-11" />
+                {validationErrors.zip && <p className="text-xs text-red-500">{validationErrors.zip}</p>}
               </div>
               <div className="col-span-2 space-y-2">
                 <label className="text-xs font-bold text-slate-400 uppercase">GST Number (Optional)</label>
@@ -1354,157 +2591,9 @@ const CheckoutModal = ({ isOpen, onClose }: { isOpen: boolean; onClose: () => vo
 
           <div className="flex gap-3">
             <Button variant="outline" onClick={() => setStep('summary')} className="flex-1">Back</Button>
-            <Button className="flex-1 gap-2" onClick={() => setStep('payment')}>
-              Continue to Payment <ArrowRight size={18} />
-            </Button>
-          </div>
-        </div>
-      )}
-
-      {/* Step: Payment */}
-      {step === 'payment' && (
-        <div className="space-y-6">
-          <div>
-            <h3 className="font-bold text-slate-900 mb-4 flex items-center gap-2">
-              <Wallet size={18} /> Payment Method
-            </h3>
-            
-            {/* Payment Method Selection */}
-            <div className="grid grid-cols-3 gap-3 mb-6">
-              <button
-                onClick={() => setPaymentMethod('card')}
-                className={cn(
-                  "p-4 rounded-xl border-2 text-center transition-all",
-                  paymentMethod === 'card' ? 'border-blue-600 bg-blue-50' : 'border-slate-200 hover:border-blue-300'
-                )}
-              >
-                <CreditCard className={cn("size-6 mx-auto mb-2", paymentMethod === 'card' ? 'text-blue-600' : 'text-slate-400')} />
-                <div className={cn("text-sm font-medium", paymentMethod === 'card' ? 'text-blue-600' : 'text-slate-600')}>Card</div>
-              </button>
-              <button
-                onClick={() => setPaymentMethod('upi')}
-                className={cn(
-                  "p-4 rounded-xl border-2 text-center transition-all",
-                  paymentMethod === 'upi' ? 'border-blue-600 bg-blue-50' : 'border-slate-200 hover:border-blue-300'
-                )}
-              >
-                <IndianRupee className={cn("size-6 mx-auto mb-2", paymentMethod === 'upi' ? 'text-blue-600' : 'text-slate-400')} />
-                <div className={cn("text-sm font-medium", paymentMethod === 'upi' ? 'text-blue-600' : 'text-slate-600')}>UPI</div>
-              </button>
-              <button
-                onClick={() => setPaymentMethod('netbanking')}
-                className={cn(
-                  "p-4 rounded-xl border-2 text-center transition-all",
-                  paymentMethod === 'netbanking' ? 'border-blue-600 bg-blue-50' : 'border-slate-200 hover:border-blue-300'
-                )}
-              >
-                <Building2 className={cn("size-6 mx-auto mb-2", paymentMethod === 'netbanking' ? 'text-blue-600' : 'text-slate-400')} />
-                <div className={cn("text-sm font-medium", paymentMethod === 'netbanking' ? 'text-blue-600' : 'text-slate-600')}>Net Banking</div>
-              </button>
-            </div>
-
-            {/* Card Form */}
-            {paymentMethod === 'card' && (
-              <div className="space-y-4 p-4 bg-slate-50 rounded-xl">
-                <div className="space-y-2">
-                  <label className="text-xs font-bold text-slate-400 uppercase">Card Number</label>
-                  <Input 
-                    value={cardInfo.number} 
-                    onChange={e => setCardInfo({...cardInfo, number: e.target.value})} 
-                    placeholder="4242 4242 4242 4242" 
-                    className="h-11 font-mono"
-                  />
-                </div>
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-2">
-                    <label className="text-xs font-bold text-slate-400 uppercase">Expiry</label>
-                    <Input 
-                      value={cardInfo.expiry} 
-                      onChange={e => setCardInfo({...cardInfo, expiry: e.target.value})} 
-                      placeholder="MM/YY" 
-                      className="h-11"
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <label className="text-xs font-bold text-slate-400 uppercase">CVV</label>
-                    <Input 
-                      type="password"
-                      value={cardInfo.cvv} 
-                      onChange={e => setCardInfo({...cardInfo, cvv: e.target.value})} 
-                      placeholder="•••" 
-                      className="h-11"
-                      maxLength={4}
-                    />
-                  </div>
-                </div>
-                <div className="space-y-2">
-                  <label className="text-xs font-bold text-slate-400 uppercase">Cardholder Name</label>
-                  <Input 
-                    value={cardInfo.name} 
-                    onChange={e => setCardInfo({...cardInfo, name: e.target.value})} 
-                    placeholder="John Doe" 
-                    className="h-11"
-                  />
-                </div>
-              </div>
-            )}
-
-            {/* UPI Form */}
-            {paymentMethod === 'upi' && (
-              <div className="space-y-4 p-4 bg-slate-50 rounded-xl">
-                <div className="space-y-2">
-                  <label className="text-xs font-bold text-slate-400 uppercase">UPI ID</label>
-                  <Input 
-                    value={upiId} 
-                    onChange={e => setUpiId(e.target.value)} 
-                    placeholder="yourname@upi" 
-                    className="h-11"
-                  />
-                </div>
-                <p className="text-xs text-slate-400">Enter your UPI ID and we'll send a payment request to your app.</p>
-              </div>
-            )}
-
-            {/* Net Banking Form */}
-            {paymentMethod === 'netbanking' && (
-              <div className="space-y-4 p-4 bg-slate-50 rounded-xl">
-                <div className="space-y-2">
-                  <label className="text-xs font-bold text-slate-400 uppercase">Select Bank</label>
-                  <select 
-                    value={selectedBank}
-                    onChange={e => setSelectedBank(e.target.value)}
-                    className="w-full h-11 px-4 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  >
-                    <option value="">Select your bank</option>
-                    <option value="sbi">State Bank of India</option>
-                    <option value="hdfc">HDFC Bank</option>
-                    <option value="icici">ICICI Bank</option>
-                    <option value="axis">Axis Bank</option>
-                    <option value="kotak">Kotak Mahindra Bank</option>
-                  </select>
-                </div>
-              </div>
-            )}
-          </div>
-
-          {/* Cashfree Badge */}
-          <div className="flex items-center justify-center gap-2 py-3 bg-slate-50 rounded-xl">
-            <Lock className="size-4 text-slate-400" />
-            <span className="text-xs text-slate-500">Secured by</span>
-            <span className="text-sm font-bold text-slate-700">Cashfree</span>
-            <BadgeCheck className="size-4 text-emerald-500" />
-          </div>
-
-          {/* Order Total */}
-          <div className="flex justify-between items-center p-4 bg-gradient-to-r from-blue-600 to-indigo-600 rounded-xl text-white">
-            <span className="font-medium">Total Amount</span>
-            <span className="text-2xl font-black">${total.toFixed(2)}</span>
-          </div>
-
-          <div className="flex gap-3">
-            <Button variant="outline" onClick={() => setStep('billing')} className="flex-1">Back</Button>
             <Button className="flex-1 gap-2 bg-emerald-600 hover:bg-emerald-700" onClick={handlePayment}>
-              <Lock size={16} /> Pay ${total.toFixed(2)}
+              <Lock size={16} />
+              Continue to Payment <ArrowRight size={18} />
             </Button>
           </div>
         </div>
@@ -1529,7 +2618,9 @@ const CheckoutModal = ({ isOpen, onClose }: { isOpen: boolean; onClose: () => vo
           </div>
           <div className="flex items-center justify-center gap-2 text-sm text-slate-400">
             <Lock size={14} />
-            <span>Secured by Cashfree Payment Gateway</span>
+            <span>
+              {activeCashfreeOrderId ? `Verifying order ${activeCashfreeOrderId}...` : 'Secured by Cashfree Payment Gateway'}
+            </span>
           </div>
         </div>
       )}
@@ -1561,7 +2652,7 @@ const CheckoutModal = ({ isOpen, onClose }: { isOpen: boolean; onClose: () => vo
             </div>
             <div className="flex justify-between text-sm">
               <span className="text-slate-500">Amount Paid</span>
-              <span className="font-bold text-emerald-600">${orderComplete.total.toFixed(2)}</span>
+              <span className="font-bold text-emerald-600">₹{orderComplete.total.toFixed(2)}</span>
             </div>
             <div className="flex justify-between text-sm">
               <span className="text-slate-500">Payment Method</span>
@@ -1570,7 +2661,21 @@ const CheckoutModal = ({ isOpen, onClose }: { isOpen: boolean; onClose: () => vo
           </div>
 
           <div className="flex gap-3">
-            <Button variant="outline" className="flex-1 gap-2">
+            <Button
+              variant="outline"
+              className="flex-1 gap-2"
+              onClick={async () => {
+                if (!invoices[0]) {
+                  showToast('Invoice is being generated. Please try again in a moment.', 'info');
+                  return;
+                }
+                try {
+                  await downloadInvoiceReceipt(invoices[0]);
+                } catch {
+                  showToast('Unable to download invoice PDF right now. Please try again.', 'error');
+                }
+              }}
+            >
               <Download size={16} /> Download Invoice
             </Button>
             <Button className="flex-1" onClick={handleClose}>
@@ -1583,17 +2688,33 @@ const CheckoutModal = ({ isOpen, onClose }: { isOpen: boolean; onClose: () => vo
   );
 };
 
+const INVOICE_LOGO_PATH = '/volosist-logo.svg';
+const downloadInvoiceReceipt = async (invoice: Invoice) => {
+  await downloadInvoicePdf(invoice, {
+    logoPath: INVOICE_LOGO_PATH,
+    supportPhone: '+91 9769789769',
+    supportEmail: 'volosist.ai@gmail.com',
+    supportLabel: 'Global Support',
+    inquiryLabel: 'Email Inquiry',
+    fileSuffix: 'volosist-receipt',
+  });
+};
+
 // Invoice Modal
 const InvoiceModal = ({ isOpen, onClose, invoice }: { isOpen: boolean; onClose: () => void; invoice: Invoice | null }) => {
+  const { showToast } = useDashboard();
   if (!invoice) return null;
 
   const handlePrint = () => {
     window.print();
   };
 
-  const handleDownload = () => {
-    // In a real app, generate PDF
-    alert('Invoice PDF download initiated');
+  const handleDownload = async () => {
+    try {
+      await downloadInvoiceReceipt(invoice);
+    } catch {
+      showToast('Unable to download invoice PDF right now. Please try again.', 'error');
+    }
   };
 
   return (
@@ -1603,13 +2724,12 @@ const InvoiceModal = ({ isOpen, onClose, invoice }: { isOpen: boolean; onClose: 
         <div className="flex justify-between items-start border-b border-slate-200 pb-6">
           <div>
             <div className="flex items-center gap-3 mb-2">
-              <img src="/favicon.ico" alt="Volosist" className="w-10 h-10" />
-              <span className="text-xl font-bold text-slate-900">VOLOSIST</span>
+              <img src={INVOICE_LOGO_PATH} alt="Volosist" className="h-12 w-auto object-contain" />
             </div>
             <div className="text-sm text-slate-500 space-y-1">
               <p>AI Automation Solutions</p>
-              <p>support@volosist.com</p>
-              <p>+1 (800) 123-4567</p>
+              <p>Global Support: +91 9769789769</p>
+              <p>Email Inquiry: volosist.ai@gmail.com</p>
             </div>
           </div>
           <div className="text-right">
@@ -1659,8 +2779,8 @@ const InvoiceModal = ({ isOpen, onClose, invoice }: { isOpen: boolean; onClose: 
                 <p className="text-xs text-slate-400">{item.plan}</p>
               </div>
               <div className="col-span-2 text-center text-slate-600">{item.quantity}</div>
-              <div className="col-span-2 text-right text-slate-600">${item.unitPrice.toFixed(2)}</div>
-              <div className="col-span-3 text-right font-bold text-slate-900">${item.total.toFixed(2)}</div>
+              <div className="col-span-2 text-right text-slate-600">₹{item.unitPrice.toFixed(2)}</div>
+              <div className="col-span-3 text-right font-bold text-slate-900">₹{item.total.toFixed(2)}</div>
             </div>
           ))}
         </div>
@@ -1670,15 +2790,15 @@ const InvoiceModal = ({ isOpen, onClose, invoice }: { isOpen: boolean; onClose: 
           <div className="w-72 space-y-2">
             <div className="flex justify-between text-sm">
               <span className="text-slate-500">Subtotal</span>
-              <span className="font-medium">${invoice.subtotal.toFixed(2)}</span>
+              <span className="font-medium">₹{invoice.subtotal.toFixed(2)}</span>
             </div>
             <div className="flex justify-between text-sm">
               <span className="text-slate-500">GST (18%)</span>
-              <span className="font-medium">${invoice.tax.toFixed(2)}</span>
+              <span className="font-medium">₹{invoice.tax.toFixed(2)}</span>
             </div>
             <div className="flex justify-between text-lg font-bold border-t border-slate-200 pt-2">
               <span>Total</span>
-              <span className="text-blue-600">${invoice.total.toFixed(2)}</span>
+              <span className="text-blue-600">₹{invoice.total.toFixed(2)}</span>
             </div>
             {invoice.paidDate && (
               <div className="flex justify-between text-sm pt-2 text-emerald-600">
@@ -1738,7 +2858,7 @@ const OrderDetailsModal = ({ isOpen, onClose, order }: { isOpen: boolean; onClos
                   <p className="text-xs text-slate-400">{item.plan} Plan</p>
                 </div>
               </div>
-              <span className="font-bold text-slate-900">${item.price}/mo</span>
+              <span className="font-bold text-slate-900">₹{item.price}/mo</span>
             </div>
           ))}
         </div>
@@ -1746,15 +2866,15 @@ const OrderDetailsModal = ({ isOpen, onClose, order }: { isOpen: boolean; onClos
         <div className="bg-slate-50 rounded-xl p-4 space-y-2">
           <div className="flex justify-between text-sm">
             <span className="text-slate-500">Subtotal</span>
-            <span className="font-medium">${order.subtotal.toFixed(2)}</span>
+            <span className="font-medium">₹{order.subtotal.toFixed(2)}</span>
           </div>
           <div className="flex justify-between text-sm">
             <span className="text-slate-500">Tax (GST 18%)</span>
-            <span className="font-medium">${order.tax.toFixed(2)}</span>
+            <span className="font-medium">₹{order.tax.toFixed(2)}</span>
           </div>
           <div className="flex justify-between text-lg font-bold border-t border-slate-200 pt-2">
             <span>Total</span>
-            <span className="text-blue-600">${order.total.toFixed(2)}</span>
+            <span className="text-blue-600">₹{order.total.toFixed(2)}</span>
           </div>
         </div>
 
@@ -1805,7 +2925,7 @@ const ToastContainer = ({ toasts, removeToast }: { toasts: Toast[]; removeToast:
 // --- Dashboard Sub-Views ---
 
 const OverviewView = () => {
-  const { purchasedServices, teamMembers, setActiveTab, openModal } = useDashboard();
+  const { purchasedServices, teamMembers, setActiveTab, openModal, clearCart, addToCart, showToast } = useDashboard();
 
   const getDaysRemaining = (expiryDate: string) => {
     const expiry = new Date(expiryDate);
@@ -1815,6 +2935,45 @@ const OverviewView = () => {
   };
 
   const totalMonthlySpend = purchasedServices.reduce((acc, s) => acc + (s.renewalCost / 12), 0);
+
+  const handleStartRenewalCheckout = (service: Service) => {
+    try {
+      const serviceId = service.serviceId || resolveServiceIdFromName(service.name);
+      const normalizedPlanName =
+        String(service.plan || '')
+          .trim()
+          .toLowerCase()
+          .replace(/^\w/, (char) => char.toUpperCase()) || 'Basic';
+
+      const annualRenewalCost = Number.isFinite(service.renewalCost)
+        ? Number(service.renewalCost.toFixed(2))
+        : 0;
+
+      if (annualRenewalCost <= 0) {
+        showToast('Unable to start renewal checkout for this plan. Please contact support.', 'error');
+        return;
+      }
+
+      localStorage.setItem('volosist_pending_renewal_service', String(service.id));
+      clearCart();
+      addToCart({
+        id: `renew_${service.id}_${Date.now()}`,
+        serviceId,
+        serviceName: service.name,
+        plan: normalizedPlanName,
+        price: annualRenewalCost,
+        billingCycle: 'yearly',
+        features: Array.isArray(service.features) ? service.features : [],
+        serviceColor: service.color || 'bg-slate-600',
+        icon: SERVICE_VISUALS[serviceId]?.icon || <Package className="size-6" />,
+      });
+
+      openModal('checkout');
+      showToast('Checkout opened. Click Continue to Payment to proceed to Cashfree.', 'info');
+    } catch (error: any) {
+      showToast(error?.message || 'Unable to prepare renewal checkout. Please try again.', 'error');
+    }
+  };
 
   return (
     <div className="space-y-6">
@@ -1847,7 +3006,7 @@ const OverviewView = () => {
               <CreditCard className="size-4 text-emerald-600" />
             </div>
           </div>
-          <div className="text-xl font-black text-slate-900">${Math.round(totalMonthlySpend)}</div>
+          <div className="text-xl font-black text-slate-900">₹{Math.round(totalMonthlySpend)}</div>
           <div className="text-[10px] font-medium text-slate-400 uppercase tracking-wider">Monthly Spend</div>
         </motion.div>
 
@@ -2025,13 +3184,14 @@ const OverviewView = () => {
                     </div>
                     <Button 
                       size="sm" 
+                      type="button"
                       className={cn(
                         "gap-2 rounded-xl text-xs font-bold",
                         service.status === 'expiring' ? 'bg-orange-600 hover:bg-orange-700' : ''
                       )}
-                      onClick={() => openModal('renew', service)}
+                      onClick={() => handleStartRenewalCheckout(service)}
                     >
-                      <RefreshCw size={14} /> Renew ${service.renewalCost}/yr
+                      <RefreshCw size={14} /> Renew ₹{service.renewalCost}/yr
                     </Button>
                   </div>
                 </div>
@@ -2054,13 +3214,56 @@ const OverviewView = () => {
 };
 
 const ServicesView = () => {
+  const navigate = useNavigate();
   const { purchasedServices, cart, addToCart, removeFromCart, openModal, showToast } = useDashboard();
-  const [selectedPlans, setSelectedPlans] = useState<Record<string, number>>({
-    sales: 1, voice: 1, marketing: 1, business: 1
-  });
-  const [billingCycle, setBillingCycle] = useState<Record<string, 'monthly' | 'yearly'>>({
-    sales: 'monthly', voice: 'monthly', marketing: 'monthly', business: 'monthly'
-  });
+  const [serviceCatalog, setServiceCatalog] = useState<ServiceCatalogItem[]>(globalStore.getServiceCatalog());
+  const [selectedPlans, setSelectedPlans] = useState<Record<string, number>>({});
+  const [billingCycle, setBillingCycle] = useState<Record<string, 'monthly' | 'yearly'>>({});
+
+  useEffect(() => {
+    const syncCatalog = () => setServiceCatalog(globalStore.getServiceCatalog());
+    syncCatalog();
+    const unsubscribe = globalStore.subscribe(syncCatalog);
+    return unsubscribe;
+  }, []);
+
+  useEffect(() => {
+    setSelectedPlans((previous) => {
+      const next = { ...previous };
+      serviceCatalog.forEach((service) => {
+        if (typeof next[service.id] !== 'number') {
+          next[service.id] = Math.min(1, Math.max(0, service.plans.length - 1));
+        } else if (next[service.id] > service.plans.length - 1) {
+          next[service.id] = Math.max(0, service.plans.length - 1);
+        }
+      });
+      return next;
+    });
+
+    setBillingCycle((previous) => {
+      const next = { ...previous };
+      serviceCatalog.forEach((service) => {
+        if (!next[service.id]) {
+          next[service.id] = 'monthly';
+        }
+      });
+      return next;
+    });
+  }, [serviceCatalog]);
+
+  const availableServices = useMemo(
+    () =>
+      serviceCatalog.map((service) => ({
+        ...service,
+        ...(SERVICE_VISUALS[service.id] ?? {
+          icon: <Package className="size-6" />,
+          color: 'text-slate-600',
+          bgColor: 'bg-slate-100',
+          serviceColor: 'bg-slate-600',
+        }),
+      })),
+    [serviceCatalog]
+  );
 
   const isAlreadySubscribed = (serviceName: string) => {
     return purchasedServices.some(s => s.name === serviceName);
@@ -2068,6 +3271,10 @@ const ServicesView = () => {
 
   const getCartItem = (serviceId: string, planName: string) => {
     return cart.find(i => i.serviceId === serviceId && i.plan === planName);
+  };
+
+  const getPurchasedServiceByName = (serviceName: string) => {
+    return purchasedServices.find((service) => service.name === serviceName) || null;
   };
 
   const handleAddToCart = (service: any, plan: any) => {
@@ -2131,7 +3338,7 @@ const ServicesView = () => {
             <div>
               <p className="font-bold">{cart.length} item{cart.length > 1 ? 's' : ''} in cart</p>
               <p className="text-sm text-blue-200">
-                Total: ${cart.reduce((acc, i) => acc + i.price, 0).toFixed(2)}/month
+                Total: ₹{cart.reduce((acc, i) => acc + i.price, 0).toFixed(2)}/month
               </p>
             </div>
           </div>
@@ -2145,14 +3352,17 @@ const ServicesView = () => {
       )}
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {AVAILABLE_SERVICES.map((service) => {
+        {availableServices.map((service) => {
           const subscribed = isAlreadySubscribed(service.name);
-          const selectedIdx = selectedPlans[service.id];
-          const currentPlan = service.plans[selectedIdx];
-          const cartItem = getCartItem(service.id, currentPlan.name);
+          const hasPlans = service.plans.length > 0;
+          const selectedIdxRaw = selectedPlans[service.id];
+          const selectedIdx = hasPlans
+            ? (typeof selectedIdxRaw === 'number' && selectedIdxRaw >= 0 && selectedIdxRaw < service.plans.length ? selectedIdxRaw : 0)
+            : -1;
+          const currentPlan = hasPlans ? service.plans[selectedIdx] : null;
+          const cartItem = currentPlan ? getCartItem(service.id, currentPlan.name) : undefined;
           const inCart = !!cartItem;
-          const cycle = billingCycle[service.id];
-          const displayPrice = cycle === 'yearly' ? Math.round(currentPlan.price * 0.8) : currentPlan.price;
+          const cycle = billingCycle[service.id] ?? 'monthly';
           
           return (
             <motion.div
@@ -2211,6 +3421,8 @@ const ServicesView = () => {
 
               {/* Pricing Plans */}
               <div className="p-6 bg-slate-50">
+                {hasPlans ? (
+                <>
                 <div className="grid grid-cols-3 gap-3">
                   {service.plans.map((plan, idx) => {
                     const planPrice = cycle === 'yearly' ? Math.round(plan.price * 0.8) : plan.price;
@@ -2238,7 +3450,7 @@ const ServicesView = () => {
                           "text-2xl font-black mb-1", 
                           selectedIdx === idx && !subscribed ? 'text-white' : 'text-slate-900'
                         )}>
-                          ${planPrice}
+                          ₹{planPrice}
                         </div>
                         <div className={cn(
                           "text-[10px]", 
@@ -2253,7 +3465,7 @@ const ServicesView = () => {
                 <div className="mt-4 p-3 bg-white rounded-lg border border-slate-100">
                   <div className="text-xs font-bold text-slate-400 uppercase mb-2">Includes:</div>
                   <div className="grid grid-cols-2 gap-1">
-                    {currentPlan.features.slice(0, 4).map((f, i) => (
+                    {currentPlan?.features.slice(0, 4).map((f, i) => (
                       <div key={i} className="flex items-center gap-1 text-xs text-slate-600">
                         <Check size={12} className="text-emerald-500 shrink-0" />
                         <span className="truncate">{f}</span>
@@ -2265,15 +3477,61 @@ const ServicesView = () => {
                 {/* Action Buttons */}
                 <div className="flex gap-2 mt-4">
                   {subscribed ? (
-                    <Button className="w-full gap-2 bg-emerald-600" disabled>
-                      <Check size={18} /> Already Subscribed
-                    </Button>
+                    <>
+                      <Button className="flex-1 gap-2 bg-emerald-600" disabled>
+                        <Check size={18} /> Already Subscribed
+                      </Button>
+                      <Button
+                        variant="outline"
+                        className="flex-1 gap-2 border-orange-200 text-orange-700 hover:bg-orange-50"
+                        onClick={() => {
+                          try {
+                            const purchasedService = getPurchasedServiceByName(service.name);
+                            if (!purchasedService) {
+                              showToast('Unable to load refund details for this service.', 'error');
+                              return;
+                            }
+
+                            const params = new URLSearchParams({
+                              serviceId: String(purchasedService.serviceId || ''),
+                              serviceName: String(purchasedService.name || ''),
+                              plan: String(purchasedService.plan || ''),
+                              orderId: String(purchasedService.cashfreeOrderId || ''),
+                              amount: String(
+                                Number.isFinite(purchasedService.renewalCost)
+                                  ? purchasedService.renewalCost
+                                  : 0
+                              ),
+                            });
+
+                            navigate(`/dashboard/refund?${params.toString()}`, {
+                              state: {
+                                service: {
+                                  serviceId: String(purchasedService.serviceId || ''),
+                                  name: String(purchasedService.name || ''),
+                                  plan: String(purchasedService.plan || ''),
+                                  cashfreeOrderId: String(purchasedService.cashfreeOrderId || ''),
+                                  renewalCost: Number.isFinite(purchasedService.renewalCost)
+                                    ? purchasedService.renewalCost
+                                    : 0,
+                                },
+                              },
+                            });
+                          } catch (error) {
+                            console.error('[refund] failed to open refund page:', error);
+                            showToast('Refund page could not be opened. Please refresh and try again.', 'error');
+                          }
+                        }}
+                      >
+                        <History size={16} /> Refund
+                      </Button>
+                    </>
                   ) : inCart ? (
                     <>
                       <Button 
                         variant="outline"
                         className="flex-1 gap-2 border-red-200 text-red-600 hover:bg-red-50"
-                        onClick={() => handleRemoveFromCart(service.id, currentPlan.name)}
+                        onClick={() => currentPlan && handleRemoveFromCart(service.id, currentPlan.name)}
                       >
                         <X size={16} /> Remove
                       </Button>
@@ -2289,13 +3547,14 @@ const ServicesView = () => {
                       <Button 
                         variant="outline"
                         className="flex-1 gap-2"
-                        onClick={() => handleAddToCart(service, currentPlan)}
+                        onClick={() => currentPlan && handleAddToCart(service, currentPlan)}
                       >
                         <ShoppingCart size={16} /> Add to Cart
                       </Button>
                       <Button 
                         className="flex-1 gap-2"
                         onClick={() => {
+                          if (!currentPlan) return;
                           handleAddToCart(service, currentPlan);
                           openModal('checkout');
                         }}
@@ -2305,6 +3564,12 @@ const ServicesView = () => {
                     </>
                   )}
                 </div>
+                </>
+                ) : (
+                  <div className="rounded-xl border border-amber-200 bg-amber-50 text-amber-700 text-sm p-4">
+                    No plans configured for this service yet. Ask admin to add Basic/Pro/Business pricing.
+                  </div>
+                )}
               </div>
             </motion.div>
           );
@@ -2315,7 +3580,7 @@ const ServicesView = () => {
 };
 
 const SecurityView = () => {
-  const { teamMembers, setTeamMembers, openModal, showToast } = useDashboard();
+  const { teamMembers, setTeamMembers, openModal, showToast, currentUser } = useDashboard();
   const [twoFactorEnabled, setTwoFactorEnabled] = useState(false);
   const [sessionTimeout, setSessionTimeout] = useState('30 minutes');
   const [memberToDelete, setMemberToDelete] = useState<TeamMember | null>(null);
@@ -2330,11 +3595,36 @@ const SecurityView = () => {
     }
   };
 
-  const handleDeleteMember = () => {
-    if (memberToDelete) {
-      setTeamMembers(prev => prev.filter(m => m.id !== memberToDelete.id));
+  const getStatusColor = (status: string) => {
+    const normalized = String(status || '').toLowerCase();
+    if (normalized === 'pending') return 'text-orange-600';
+    if (normalized === 'active') return 'text-emerald-600';
+    if (normalized === 'revoked') return 'text-red-600';
+    if (normalized === 'expired') return 'text-slate-500';
+    return 'text-slate-500';
+  };
+
+  const handleDeleteMember = async () => {
+    if (!memberToDelete) return;
+
+    try {
+      if (memberToDelete.invitationId) {
+        const { userId: ownerUserId, email: ownerEmail } = getDashboardUserIdentity(currentUser);
+        if (!ownerUserId) {
+          throw new Error('Missing owner identity. Please sign in again.');
+        }
+
+        await revokeTeamAccessMember(memberToDelete.invitationId, {
+          ownerUserId,
+          ownerEmail: ownerEmail || undefined,
+        });
+      }
+
+      setTeamMembers((prev) => prev.filter((member) => member.id !== memberToDelete.id));
       showToast(`${memberToDelete.name} has been removed from the team`, 'success');
       setMemberToDelete(null);
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : 'Unable to remove member right now.', 'error');
     }
   };
 
@@ -2426,10 +3716,7 @@ const SecurityView = () => {
               </Badge>
             </div>
             <div className="col-span-3">
-              <span className={cn(
-                "text-sm",
-                member.status === 'pending' ? 'text-orange-600' : 'text-slate-500'
-              )}>
+              <span className={cn('text-sm', getStatusColor(member.status))}>
                 {member.lastActive}
               </span>
             </div>
@@ -2596,7 +3883,7 @@ const OrdersView = () => {
             </div>
           </div>
           <div className="text-2xl font-black text-slate-900">
-            ${invoices.reduce((acc, i) => acc + i.total, 0).toLocaleString()}
+            ₹{invoices.reduce((acc, i) => acc + i.total, 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
           </div>
           <div className="text-xs font-medium text-slate-400 uppercase">Total Spent</div>
         </div>
@@ -2649,7 +3936,7 @@ const OrdersView = () => {
               </div>
               <div className="col-span-2 text-slate-600 text-sm">{formatDate(invoice.date)}</div>
               <div className="col-span-2 text-slate-600 text-sm">{formatDate(invoice.dueDate)}</div>
-              <div className="col-span-2 text-right font-bold text-slate-900">${invoice.total.toFixed(2)}</div>
+              <div className="col-span-2 text-right font-bold text-slate-900">₹{invoice.total.toFixed(2)}</div>
               <div className="col-span-2 text-center">
                 <Badge className={cn(
                   "text-xs",
@@ -2678,7 +3965,7 @@ const OrdersView = () => {
                   className="size-8 text-slate-400 hover:text-emerald-600"
                   onClick={(e) => {
                     e.stopPropagation();
-                    alert('Download initiated');
+                    downloadInvoiceReceipt(invoice);
                   }}
                 >
                   <Download size={14} />
@@ -2742,7 +4029,7 @@ const OrdersView = () => {
                   )}
                 </div>
               </div>
-              <div className="col-span-2 text-right font-bold text-slate-900">${order.total.toFixed(2)}</div>
+              <div className="col-span-2 text-right font-bold text-slate-900">₹{order.total.toFixed(2)}</div>
               <div className="col-span-2 text-center">
                 <Badge className={cn(
                   "text-xs",
@@ -2790,29 +4077,33 @@ const SettingsView = ({ user }: { user: any }) => {
   
   const handleSave = async () => {
     setSaving(true);
-    // Auth temporarily bypassed for development
-    // TODO: Restore Supabase auth when credentials are renewed
-    // const { error } = await supabase.auth.updateUser({
-    //   data: {
-    //     full_name: formData.name,
-    //     phone: formData.phone,
-    //     company: formData.company,
-    //     timezone: formData.timezone,
-    //   }
-    // });
-    // if (error) {
-    //   showToast(error.message, 'error');
-    // } else {
-    //   showToast('Profile updated successfully', 'success');
-    //   setIsEditing(false);
-    // }
-    
-    // Bypass - simulate success
-    setTimeout(() => {
+    const { error } = await supabase.auth.updateUser({
+      data: {
+        full_name: formData.name,
+        phone: formData.phone,
+        company: formData.company,
+        timezone: formData.timezone,
+      }
+    });
+
+    if (error) {
       setSaving(false);
-      showToast('Profile updated successfully', 'success');
-      setIsEditing(false);
-    }, 500);
+      showToast(error.message, 'error');
+      return;
+    }
+
+    setSaving(false);
+    showToast('Profile updated successfully', 'success');
+    setIsEditing(false);
+
+    globalStore.upsertUserProfile({
+      id: String(user?.id || '').trim(),
+      email: String(user?.email || '').trim().toLowerCase(),
+      name: formData.name,
+      company: formData.company,
+      phone: formData.phone,
+      plan: 'Basic',
+    });
   };
 
   return (
@@ -2973,7 +4264,7 @@ const SettingsView = ({ user }: { user: any }) => {
 
 export function DashboardPage({ user, onNavigate, onSignOut }: DashboardPageProps) {
   return (
-    <DashboardProvider>
+    <DashboardProvider user={user}>
       <DashboardContent user={user} onNavigate={onNavigate} onSignOut={onSignOut} />
     </DashboardProvider>
   );

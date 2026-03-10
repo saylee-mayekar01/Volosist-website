@@ -82,7 +82,7 @@ export const About3 = ({
   companies = defaultCompanies,
 }: About3Props = {}) => {
   return (
-    <section className="py-24 lg:py-32 bg-white">
+    <section className="py-24 lg:py-32 bg-gradient-to-br from-slate-50 via-blue-50/30 to-indigo-50/20">
       <div className="container mx-auto px-6">
         <div className="grid gap-7 lg:grid-cols-3">
           <img

@@ -56,7 +56,7 @@ const features = [
 
 export function PricingComparison() {
   return (
-    <section className="w-full py-32 lg:py-48 bg-white overflow-hidden">
+    <section className="w-full py-32 lg:py-48 bg-gradient-to-b from-slate-50 via-indigo-50/20 to-blue-50/30 overflow-hidden">
       <div className="container mx-auto px-6 max-w-[1440px]">
         <div className="flex text-center justify-center items-center gap-8 flex-col mb-24">
           <Badge variant="blue" className="px-6 py-2 rounded-full">Engagement Tiers</Badge>

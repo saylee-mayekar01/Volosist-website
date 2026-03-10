@@ -27,7 +27,7 @@ const Blog8 = ({
   posts = [],
 }: Blog8Props) => {
   return (
-    <section className="py-12 md:py-16 bg-white">
+    <section className="py-12 md:py-16 bg-gradient-to-br from-slate-50 via-blue-50/25 to-slate-100/40">
       <div className="container mx-auto px-6 flex flex-col items-center gap-16">
         <div className="text-center max-w-3xl">
           <h2 className="mb-6 text-4xl font-bold tracking-tight text-slate-900 md:text-5xl uppercase">

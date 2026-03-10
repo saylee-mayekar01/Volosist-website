@@ -30,36 +30,34 @@ export function SignUpPage({ onGoToSignIn }: { onGoToSignIn: () => void }) {
       setError("You must accept the terms and conditions.");
       return;
     }
+
+    if (formData.password !== formData.confirmPassword) {
+      setError("Passwords do not match.");
+      return;
+    }
     
     setLoading(true);
     setError(null);
 
-    // Auth temporarily bypassed for development
-    // TODO: Restore Supabase auth when credentials are renewed
-    // const { error: signUpError } = await supabase.auth.signUp({
-    //   email: formData.email,
-    //   password: formData.password,
-    //   options: {
-    //     data: {
-    //       first_name: formData.firstName,
-    //       last_name: formData.lastName,
-    //     },
-    //   },
-    // });
-    //
-    // if (signUpError) {
-    //   setError(signUpError.message);
-    //   setLoading(false);
-    // } else {
-    //   setSuccess(true);
-    //   setLoading(false);
-    // }
-    
-    // Bypass - simulate success
-    setTimeout(() => {
-      setSuccess(true);
+    const { error: signUpError } = await supabase.auth.signUp({
+      email: formData.email,
+      password: formData.password,
+      options: {
+        data: {
+          first_name: formData.firstName,
+          last_name: formData.lastName,
+        },
+      },
+    });
+
+    if (signUpError) {
+      setError(signUpError.message);
       setLoading(false);
-    }, 500);
+      return;
+    }
+
+    setSuccess(true);
+    setLoading(false);
   };
 
   if (success) {
@@ -149,6 +147,19 @@ export function SignUpPage({ onGoToSignIn }: { onGoToSignIn: () => void }) {
                   placeholder="••••••••" 
                   value={formData.password} 
                   onChange={(e) => setFormData({...formData, password: e.target.value})}
+                  required
+                  leftIcon={<Lock />}
+                />
+              </div>
+
+              <div className="space-y-1.5">
+                <Label htmlFor="confirmPassword">Confirm Password</Label>
+                <Input 
+                  id="confirmPassword" 
+                  type="password" 
+                  placeholder="••••••••" 
+                  value={formData.confirmPassword} 
+                  onChange={(e) => setFormData({...formData, confirmPassword: e.target.value})}
                   required
                   leftIcon={<Lock />}
                 />

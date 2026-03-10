@@ -6,7 +6,13 @@ import { PhoneCall, ArrowRight } from "lucide-react";
 import { useEffect, useState, useMemo } from "react";
 import { Button } from "./button";
 
-export function HeroGeometric({ onAction }: { onAction?: () => void }) {
+export function HeroGeometric({
+    onBookCall,
+    onViewSolutions,
+}: {
+    onBookCall?: () => void;
+    onViewSolutions?: () => void;
+}) {
     const [titleNumber, setTitleNumber] = useState(0);
     const titles = useMemo(
         () => ["Workflows", "Intelligence", "Operations", "Systems", "Future"],
@@ -83,13 +89,14 @@ export function HeroGeometric({ onAction }: { onAction?: () => void }) {
                     {/* Actions - Using Brand Blue Color for Buttons */}
                     <motion.div custom={3} variants={fadeUpVariants} initial="hidden" animate="visible" className="flex flex-col sm:flex-row items-center justify-center gap-4">
                         <Button 
-                            onClick={onAction} 
+                            onClick={onBookCall} 
                             size="lg" 
                             className="rounded-full bg-[#2960ea] hover:bg-[#1a4dc9] text-white font-black uppercase tracking-widest text-[9px] px-10 h-14 shadow-xl shadow-[#2960ea]/10 gap-3 transition-all hover:-translate-y-0.5"
                         >
                             Book Consultation <PhoneCall className="size-4" />
                         </Button>
                         <Button 
+                            onClick={onViewSolutions}
                             size="lg" 
                             variant="outline" 
                             className="rounded-full font-black uppercase tracking-widest text-[9px] px-10 h-14 border-[#2960ea]/30 text-[#0F223E] bg-white/50 backdrop-blur-md gap-3 transition-all hover:bg-white hover:-translate-y-0.5"

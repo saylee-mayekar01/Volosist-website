@@ -217,6 +217,12 @@ const Navbar1 = ({
           <div className="flex gap-8 items-center">
             {user ? (
               <div className="flex items-center gap-6">
+                <button
+                  onClick={() => navigate('/dashboard')}
+                  className="hidden sm:block text-sm font-bold text-blue-600 hover:text-blue-700 transition-colors"
+                >
+                  Dashboard
+                </button>
                 <div className="hidden sm:flex items-center gap-2 text-sm font-bold text-slate-600">
                   <UserIcon size={16} className="text-blue-600" />
                   <span className="max-w-[120px] truncate">{user.email}</span>
@@ -276,13 +282,15 @@ const Navbar1 = ({
                       
                       <div className="flex flex-col gap-4 pt-4">
                         {user ? (
-                          <Button
-                            variant="outline"
-                            className="w-full font-bold uppercase tracking-widest h-12 text-red-500 border-red-100 hover:bg-red-50"
-                            onClick={onSignOut}
-                          >
-                            Sign Out
-                          </Button>
+                          <>
+                            <Button
+                              variant="outline"
+                              className="w-full font-bold uppercase tracking-widest h-12 text-red-500 border-red-100 hover:bg-red-50"
+                              onClick={onSignOut}
+                            >
+                              Sign Out
+                            </Button>
+                          </>
                         ) : (
                           <>
                             <Button

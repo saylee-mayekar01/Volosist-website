@@ -19,15 +19,20 @@ export interface User {
 export interface Payment {
   id: string;
   orderId: string;
+  cashfreeOrderId?: string;
   userId: string;
   userName: string;
   userEmail: string;
   amount: number;
-  status: 'completed' | 'pending' | 'failed' | 'refunded';
+  status: 'completed' | 'pending' | 'failed' | 'refunded' | 'refund_pending' | 'refund_cancelled';
   method: 'UPI' | 'Card' | 'Net Banking' | 'Wallet';
   date: string;
   service: string;
   plan: string;
+  refundReason?: string;
+  refundNotes?: string;
+  refundRequestedAt?: string;
+  refundResolvedAt?: string;
   items?: PaymentItem[];
 }
 
@@ -74,6 +79,20 @@ export interface ServiceSubscription {
   renewalCost: number;
 }
 
+export interface ServiceCatalogPlan {
+  name: string;
+  price: number;
+  features: string[];
+  limit: number;
+}
+
+export interface ServiceCatalogItem {
+  id: string;
+  name: string;
+  description: string;
+  plans: ServiceCatalogPlan[];
+}
+
 export interface Notification {
   id: string;
   userId?: string; // null for admin notifications
@@ -96,39 +115,98 @@ export interface ActivityLog {
 }
 
 // Initial sample data
-const INITIAL_USERS: User[] = [
-  { id: 'user_001', name: 'Rahul Sharma', email: 'rahul@techcorp.in', company: 'TechCorp India', phone: '+91 98765 43210', status: 'active', plan: 'Business', totalSpent: 45000, joinDate: '2025-06-15', lastActive: '2026-02-14', services: 3 },
-  { id: 'user_002', name: 'Priya Patel', email: 'priya@startupx.io', company: 'StartupX', phone: '+91 87654 32109', status: 'active', plan: 'Pro', totalSpent: 28500, joinDate: '2025-08-22', lastActive: '2026-02-13', services: 2 },
-  { id: 'user_003', name: 'Amit Kumar', email: 'amit@globalent.com', company: 'Global Enterprises', phone: '+91 76543 21098', status: 'inactive', plan: 'Basic', totalSpent: 8900, joinDate: '2025-11-10', lastActive: '2026-01-20', services: 1 },
-  { id: 'user_004', name: 'Sneha Reddy', email: 'sneha@innovate.co', company: 'Innovate Labs', phone: '+91 65432 10987', status: 'active', plan: 'Business', totalSpent: 67200, joinDate: '2025-03-08', lastActive: '2026-02-14', services: 4 },
-  { id: 'user_005', name: 'Vikram Singh', email: 'vikram@nexus.tech', company: 'Nexus Technologies', phone: '+91 54321 09876', status: 'suspended', plan: 'Pro', totalSpent: 15600, joinDate: '2025-09-01', lastActive: '2026-01-05', services: 2 },
-  { id: 'dev-user', name: 'Dev User', email: 'dev@volosist.com', company: 'Volosist Technologies', phone: '+91 99999 99999', status: 'active', plan: 'Business', totalSpent: 0, joinDate: '2026-02-01', lastActive: '2026-02-14', services: 0 },
-];
+const INITIAL_USERS: User[] = [];
 
-const INITIAL_PAYMENTS: Payment[] = [
-  { id: 'pay_001', orderId: 'ORD-2026-1001', userId: 'user_001', userName: 'Rahul Sharma', userEmail: 'rahul@techcorp.in', amount: 2990, status: 'completed', method: 'UPI', date: '2026-02-14T10:30:00Z', service: 'Marketing & Content', plan: 'Business' },
-  { id: 'pay_002', orderId: 'ORD-2026-1002', userId: 'user_002', userName: 'Priya Patel', userEmail: 'priya@startupx.io', amount: 1490, status: 'completed', method: 'Card', date: '2026-02-13T15:45:00Z', service: 'Sales Automation', plan: 'Pro' },
-  { id: 'pay_003', orderId: 'ORD-2026-1003', userId: 'user_004', userName: 'Sneha Reddy', userEmail: 'sneha@innovate.co', amount: 4480, status: 'pending', method: 'Net Banking', date: '2026-02-14T09:20:00Z', service: 'Full Suite', plan: 'Business' },
-  { id: 'pay_004', orderId: 'ORD-2026-1004', userId: 'user_003', userName: 'Amit Kumar', userEmail: 'amit@globalent.com', amount: 790, status: 'failed', method: 'UPI', date: '2026-02-12T14:10:00Z', service: 'Customer Support', plan: 'Basic' },
-  { id: 'pay_005', orderId: 'ORD-2026-1005', userId: 'user_005', userName: 'Vikram Singh', userEmail: 'vikram@nexus.tech', amount: 1290, status: 'refunded', method: 'Wallet', date: '2026-02-10T11:55:00Z', service: 'Voice AI', plan: 'Pro' },
-];
+const INITIAL_PAYMENTS: Payment[] = [];
 
 const INITIAL_INVOICES: Invoice[] = [];
 
-const INITIAL_NOTIFICATIONS: Notification[] = [
-  { id: 'notif_admin_001', type: 'payment', title: 'New Payment Received', message: 'Rahul Sharma paid ₹2,990 for Marketing & Content', read: false, timestamp: '2026-02-14T10:30:00Z' },
-  { id: 'notif_admin_002', type: 'user', title: 'New User Registered', message: 'Sneha Reddy from Innovate Labs joined the platform', read: false, timestamp: '2026-02-14T09:15:00Z' },
-  { id: 'notif_admin_003', type: 'alert', title: 'Payment Pending', message: 'Payment from Sneha Reddy is pending verification', read: true, timestamp: '2026-02-14T09:20:00Z' },
-];
+const INITIAL_NOTIFICATIONS: Notification[] = [];
 
-const INITIAL_ACTIVITY_LOG: ActivityLog[] = [
-  { id: 'log_001', userId: 'user_001', action: 'payment_completed', details: 'Paid ₹2,990 for Marketing & Content - Business Plan', timestamp: '2026-02-14T10:30:00Z', type: 'user' },
-  { id: 'log_002', userId: 'user_002', action: 'payment_completed', details: 'Paid ₹1,490 for Sales Automation - Pro Plan', timestamp: '2026-02-13T15:45:00Z', type: 'user' },
-  { id: 'log_003', action: 'system_update', details: 'System maintenance completed successfully', timestamp: '2026-02-13T02:00:00Z', type: 'system' },
+const INITIAL_ACTIVITY_LOG: ActivityLog[] = [];
+
+const INITIAL_SERVICE_CATALOG: ServiceCatalogItem[] = [
+  {
+    id: 'sales',
+    name: 'Sales & Lead Automation',
+    description: 'AI-powered lead capture, CRM automation & outbound calling.',
+    plans: [
+      { name: 'Basic', price: 490, features: ['5,000 leads/month', 'Email Follow-ups', 'Basic CRM Sync'], limit: 5000 },
+      { name: 'Pro', price: 1490, features: ['20,000 leads/month', 'Email + WhatsApp + Calls', 'Full CRM Automation', 'AI Chatbot'], limit: 20000 },
+      { name: 'Business', price: 4990, features: ['Unlimited leads', 'All channels', 'Priority Support', 'Custom Integration'], limit: 100000 },
+    ],
+  },
+  {
+    id: 'voice',
+    name: 'AI Voice & Calling',
+    description: 'Intelligent voice automation for inbound/outbound calls.',
+    plans: [
+      { name: 'Basic', price: 790, features: ['1,000 minutes/month', 'Inbound Only', 'Basic Transcription'], limit: 1000 },
+      { name: 'Pro', price: 1990, features: ['5,000 minutes/month', 'Inbound + Outbound', 'Full Transcription', 'Sentiment Analysis'], limit: 5000 },
+      { name: 'Business', price: 4990, features: ['Unlimited minutes', 'All features', 'Human Handoff', 'Custom Voice'], limit: 50000 },
+    ],
+  },
+  {
+    id: 'marketing',
+    name: 'Marketing & Content',
+    description: 'AI content generation, social media & ads automation.',
+    plans: [
+      { name: 'Basic', price: 490, features: ['50 posts/month', 'AI Content Gen', '2 Social Accounts'], limit: 50 },
+      { name: 'Pro', price: 1290, features: ['200 posts/month', 'All content types', '10 Social Accounts', 'Ad Automation'], limit: 200 },
+      { name: 'Business', price: 3990, features: ['Unlimited posts', 'Full automation', 'Unlimited accounts', 'SEO Suite'], limit: 1000 },
+    ],
+  },
+  {
+    id: 'business',
+    name: 'Business Solutions',
+    description: 'Web development, design, virtual assistants & more.',
+    plans: [
+      { name: 'Basic', price: 990, features: ['1 Website', 'Basic Design', 'Email Support'], limit: 1 },
+      { name: 'Pro', price: 2490, features: ['3 Websites', 'Premium Design', 'Virtual Assistant', 'Priority Support'], limit: 3 },
+      { name: 'Business', price: 6990, features: ['Unlimited Sites', 'Full VA Suite', 'Dedicated Manager', 'Custom Solutions'], limit: 10 },
+    ],
+  },
 ];
 
 // Store class with event system for real-time updates
 type StoreListener = () => void;
+
+const isRevenueContributingStatus = (status: Payment['status']) =>
+  status === 'completed' || status === 'refund_pending' || status === 'refund_cancelled';
+
+const normalizeStoredPaymentStatus = (status: unknown): Payment['status'] => {
+  const normalized = String(status || '').trim().toLowerCase();
+
+  if (normalized === 'completed' || normalized === 'success' || normalized === 'paid') {
+    return 'completed';
+  }
+  if (normalized === 'pending') {
+    return 'pending';
+  }
+  if (normalized === 'failed') {
+    return 'failed';
+  }
+  if (normalized === 'refund_pending' || normalized === 'refund_requested' || normalized === 'requested') {
+    return 'refund_pending';
+  }
+  if (normalized === 'refund_cancelled' || normalized === 'refund_canceled' || normalized === 'cancelled') {
+    return 'refund_cancelled';
+  }
+  if (normalized === 'refunded' || normalized === 'refund') {
+    return 'refunded';
+  }
+
+  return 'failed';
+};
+
+const getPaymentNotificationTitle = (status: Payment['status']) => {
+  if (status === 'completed') return 'Payment Received';
+  if (status === 'pending') return 'Payment Pending';
+  if (status === 'failed') return 'Payment Failed';
+  if (status === 'refund_pending') return 'Refund Requested';
+  if (status === 'refund_cancelled') return 'Refund Request Cancelled';
+  return 'Payment Refunded';
+};
 
 class GlobalStore {
   private users: User[] = [];
@@ -136,10 +214,40 @@ class GlobalStore {
   private invoices: Invoice[] = [];
   private notifications: Notification[] = [];
   private activityLog: ActivityLog[] = [];
+  private serviceCatalog: ServiceCatalogItem[] = [];
   private listeners: Set<StoreListener> = new Set();
 
   constructor() {
     this.loadFromStorage();
+  }
+
+  private removeLegacyDemoData() {
+    const DEMO_USER_IDS = new Set(['user_001', 'user_002', 'user_003', 'user_004', 'user_005', 'dev-user']);
+    const DEMO_PAYMENT_IDS = new Set(['pay_001', 'pay_002', 'pay_003', 'pay_004', 'pay_005']);
+    const DEMO_NOTIFICATION_IDS = new Set(['notif_admin_001', 'notif_admin_002', 'notif_admin_003']);
+    const DEMO_ACTIVITY_IDS = new Set(['log_001', 'log_002', 'log_003']);
+
+    const usersBefore = this.users.length;
+    const paymentsBefore = this.payments.length;
+    const notificationsBefore = this.notifications.length;
+    const activityBefore = this.activityLog.length;
+
+    this.users = this.users.filter((user) => !DEMO_USER_IDS.has(user.id));
+    this.payments = this.payments.filter((payment) => !DEMO_PAYMENT_IDS.has(payment.id));
+    this.notifications = this.notifications.filter((notification) => !DEMO_NOTIFICATION_IDS.has(notification.id));
+    this.activityLog = this.activityLog.filter((log) => !DEMO_ACTIVITY_IDS.has(log.id));
+
+    return (
+      usersBefore !== this.users.length ||
+      paymentsBefore !== this.payments.length ||
+      notificationsBefore !== this.notifications.length ||
+      activityBefore !== this.activityLog.length
+    );
+  }
+
+  refreshFromStorage() {
+    this.loadFromStorage();
+    this.notify();
   }
 
   private loadFromStorage() {
@@ -148,16 +256,26 @@ class GlobalStore {
       if (stored) {
         const data = JSON.parse(stored);
         this.users = data.users || INITIAL_USERS;
-        this.payments = data.payments || INITIAL_PAYMENTS;
+        this.payments = (Array.isArray(data.payments) ? data.payments : INITIAL_PAYMENTS).map((payment: any) => ({
+          ...payment,
+          status: normalizeStoredPaymentStatus(payment?.status),
+        })) as Payment[];
         this.invoices = data.invoices || INITIAL_INVOICES;
         this.notifications = data.notifications || INITIAL_NOTIFICATIONS;
         this.activityLog = data.activityLog || INITIAL_ACTIVITY_LOG;
+        this.serviceCatalog = data.serviceCatalog || INITIAL_SERVICE_CATALOG;
+
+        const removedDemoData = this.removeLegacyDemoData();
+        if (removedDemoData) {
+          this.saveToStorage();
+        }
       } else {
         this.users = [...INITIAL_USERS];
         this.payments = [...INITIAL_PAYMENTS];
         this.invoices = [...INITIAL_INVOICES];
         this.notifications = [...INITIAL_NOTIFICATIONS];
         this.activityLog = [...INITIAL_ACTIVITY_LOG];
+        this.serviceCatalog = [...INITIAL_SERVICE_CATALOG];
         this.saveToStorage();
       }
     } catch {
@@ -166,6 +284,7 @@ class GlobalStore {
       this.invoices = [...INITIAL_INVOICES];
       this.notifications = [...INITIAL_NOTIFICATIONS];
       this.activityLog = [...INITIAL_ACTIVITY_LOG];
+      this.serviceCatalog = [...INITIAL_SERVICE_CATALOG];
     }
   }
 
@@ -177,6 +296,7 @@ class GlobalStore {
         invoices: this.invoices,
         notifications: this.notifications,
         activityLog: this.activityLog,
+        serviceCatalog: this.serviceCatalog,
       }));
     } catch (e) {
       console.error('Failed to save to storage:', e);
@@ -200,8 +320,155 @@ class GlobalStore {
     this.invoices = [];
     this.notifications = [...INITIAL_NOTIFICATIONS];
     this.activityLog = [...INITIAL_ACTIVITY_LOG];
+    this.serviceCatalog = [...INITIAL_SERVICE_CATALOG];
     this.saveToStorage();
     this.notify();
+  }
+
+  // Service Catalog
+  getServiceCatalog(): ServiceCatalogItem[] {
+    return this.serviceCatalog.map((service) => ({
+      ...service,
+      plans: service.plans.map((plan) => ({ ...plan })),
+    }));
+  }
+
+  updateServiceCatalogItem(serviceId: string, updates: Partial<Pick<ServiceCatalogItem, 'name' | 'description'>> & { plans?: ServiceCatalogPlan[] }) {
+    const serviceIndex = this.serviceCatalog.findIndex((service) => service.id === serviceId);
+    if (serviceIndex === -1) return;
+
+    this.serviceCatalog[serviceIndex] = {
+      ...this.serviceCatalog[serviceIndex],
+      ...updates,
+      plans: updates.plans ? updates.plans.map((plan) => ({ ...plan })) : this.serviceCatalog[serviceIndex].plans,
+    };
+
+    this.addActivity({
+      adminId: 'admin',
+      action: 'service_catalog_updated',
+      details: `Updated service catalog for ${this.serviceCatalog[serviceIndex].name}`,
+      type: 'admin',
+    });
+
+    this.saveToStorage();
+    this.notify();
+  }
+
+  addServiceCatalogItem(service: Omit<ServiceCatalogItem, 'id'> & { id?: string }) {
+    const baseId = (service.id || service.name)
+      .toLowerCase()
+      .trim()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '');
+
+    let nextId = baseId || `service-${Date.now()}`;
+    let counter = 1;
+    while (this.serviceCatalog.some((item) => item.id === nextId)) {
+      nextId = `${baseId || 'service'}-${counter++}`;
+    }
+
+    const newService: ServiceCatalogItem = {
+      id: nextId,
+      name: service.name,
+      description: service.description,
+      plans: service.plans.map((plan) => ({ ...plan })),
+    };
+
+    this.serviceCatalog.push(newService);
+
+    this.addActivity({
+      adminId: 'admin',
+      action: 'service_catalog_created',
+      details: `Created new service catalog item: ${newService.name}`,
+      type: 'admin',
+    });
+
+    this.saveToStorage();
+    this.notify();
+
+    return newService;
+  }
+
+  deleteServiceCatalogItem(serviceId: string) {
+    const target = this.serviceCatalog.find((service) => service.id === serviceId);
+    if (!target) return;
+
+    this.serviceCatalog = this.serviceCatalog.filter((service) => service.id !== serviceId);
+
+    this.addActivity({
+      adminId: 'admin',
+      action: 'service_catalog_deleted',
+      details: `Deleted service catalog item: ${target.name}`,
+      type: 'admin',
+    });
+
+    this.saveToStorage();
+    this.notify();
+  }
+
+  upsertUserProfile(profile: {
+    id: string;
+    email: string;
+    name?: string;
+    company?: string;
+    phone?: string;
+    plan?: string;
+  }) {
+    const safeId = String(profile.id || '').trim();
+    const safeEmail = String(profile.email || '').trim().toLowerCase();
+    if (!safeId || !safeEmail) return null;
+
+    const existingIndex = this.users.findIndex(
+      (user) => user.id === safeId || user.email.toLowerCase() === safeEmail
+    );
+
+    const fallbackName = safeEmail.split('@')[0] || 'User';
+    const nowIso = new Date().toISOString();
+
+    if (existingIndex === -1) {
+      const newUser: User = {
+        id: safeId,
+        name: profile.name?.trim() || fallbackName,
+        email: safeEmail,
+        company: profile.company?.trim() || 'N/A',
+        phone: profile.phone?.trim() || 'N/A',
+        status: 'active',
+        plan: profile.plan?.trim() || 'Basic',
+        totalSpent: 0,
+        joinDate: nowIso,
+        lastActive: nowIso,
+        services: 0,
+      };
+
+      this.users.push(newUser);
+      this.addActivity({
+        userId: newUser.id,
+        action: 'user_synced_from_auth',
+        details: `Synced profile for ${newUser.email}`,
+        type: 'user',
+      });
+      this.saveToStorage();
+      this.notify();
+      return newUser;
+    }
+
+    const existingUser = this.users[existingIndex];
+    const updatedUser: User = {
+      ...existingUser,
+      id: safeId,
+      email: safeEmail,
+      name: profile.name?.trim() || existingUser.name || fallbackName,
+      company: profile.company?.trim() || existingUser.company || 'N/A',
+      phone: profile.phone?.trim() || existingUser.phone || 'N/A',
+      plan: profile.plan?.trim() || existingUser.plan || 'Basic',
+      status: 'active',
+      lastActive: nowIso,
+    };
+
+    this.users[existingIndex] = updatedUser;
+    this.saveToStorage();
+    this.notify();
+    return updatedUser;
   }
 
   // Users
@@ -253,6 +520,14 @@ class GlobalStore {
 
   addPayment(payment: Omit<Payment, 'id' | 'orderId'>): Payment {
     const orderNum = this.payments.length + 1001;
+
+    this.upsertUserProfile({
+      id: payment.userId,
+      email: payment.userEmail,
+      name: payment.userName,
+      plan: payment.plan,
+    });
+
     const newPayment: Payment = {
       ...payment,
       id: `pay_${Date.now()}`,
@@ -261,7 +536,7 @@ class GlobalStore {
     this.payments.unshift(newPayment);
 
     // Update user stats
-    if (payment.status === 'completed') {
+    if (isRevenueContributingStatus(payment.status)) {
       const user = this.users.find(u => u.id === payment.userId);
       if (user) {
         user.totalSpent += payment.amount;
@@ -278,9 +553,7 @@ class GlobalStore {
     // Add notification
     this.addNotification({
       type: 'payment',
-      title: payment.status === 'completed' ? 'Payment Received' : 
-             payment.status === 'pending' ? 'Payment Pending' : 
-             payment.status === 'failed' ? 'Payment Failed' : 'Payment Refunded',
+      title: getPaymentNotificationTitle(payment.status),
       message: `${payment.userName} - ₹${payment.amount.toLocaleString()} for ${payment.service}`,
       read: false,
     });
@@ -297,34 +570,84 @@ class GlobalStore {
     return newPayment;
   }
 
-  updatePaymentStatus(paymentId: string, status: Payment['status']) {
+  updatePaymentStatus(
+    paymentId: string,
+    status: Payment['status'],
+    options?: { reason?: string; notes?: string }
+  ) {
     const payment = this.payments.find(p => p.id === paymentId);
     if (payment) {
       const oldStatus = payment.status;
+      const nowIso = new Date().toISOString();
+      const wasRevenueContributing = isRevenueContributingStatus(oldStatus);
+      const isRevenueContributing = isRevenueContributingStatus(status);
+
       payment.status = status;
+
+      if (status === 'refund_pending') {
+        payment.refundReason = options?.reason?.trim() || payment.refundReason;
+        payment.refundNotes = options?.notes?.trim() || payment.refundNotes;
+        payment.refundRequestedAt = payment.refundRequestedAt || nowIso;
+        payment.refundResolvedAt = undefined;
+      }
+
+      if (status === 'refund_cancelled') {
+        payment.refundResolvedAt = nowIso;
+      }
+
+      if (status === 'refunded') {
+        payment.refundResolvedAt = nowIso;
+      }
+
+      if (status === 'completed') {
+        payment.refundResolvedAt = undefined;
+      }
 
       // If marking as completed, create invoice
       if (status === 'completed' && oldStatus !== 'completed') {
-        this.createInvoiceFromPayment(payment);
-        const user = this.users.find(u => u.id === payment.userId);
-        if (user) {
-          user.totalSpent += payment.amount;
-          user.services += 1;
+        const existingInvoice = this.invoices.find((invoice) => invoice.paymentId === payment.id);
+        if (!existingInvoice) {
+          this.createInvoiceFromPayment(payment);
         }
       }
 
-      // If refunding, adjust user stats
-      if (status === 'refunded' && oldStatus === 'completed') {
-        const user = this.users.find(u => u.id === payment.userId);
+      if (wasRevenueContributing !== isRevenueContributing) {
+        const user = this.users.find((u) => u.id === payment.userId);
         if (user) {
-          user.totalSpent -= payment.amount;
+          if (isRevenueContributing) {
+            user.totalSpent += payment.amount;
+            user.services += 1;
+          } else {
+            user.totalSpent = Math.max(0, user.totalSpent - payment.amount);
+            user.services = Math.max(0, user.services - 1);
+          }
+          user.lastActive = nowIso;
         }
       }
+
+      const linkedInvoice = this.invoices.find((invoice) => invoice.paymentId === payment.id);
+      if (linkedInvoice && status === 'refunded') {
+        linkedInvoice.status = 'overdue';
+        linkedInvoice.paidDate = undefined;
+      }
+      if (linkedInvoice && status === 'completed') {
+        linkedInvoice.status = 'paid';
+        linkedInvoice.paidDate = nowIso.split('T')[0];
+      }
+
+      this.addNotification({
+        type: 'payment',
+        title: getPaymentNotificationTitle(status),
+        message: `${payment.userName} - ₹${payment.amount.toLocaleString()} for ${payment.service}`,
+        read: false,
+      });
+
+      const reasonText = options?.reason ? ` (reason: ${options.reason})` : '';
 
       this.addActivity({
         adminId: 'admin',
         action: `payment_status_updated`,
-        details: `Payment ${payment.orderId} status changed from ${oldStatus} to ${status}`,
+        details: `Payment ${payment.orderId} status changed from ${oldStatus} to ${status}${reasonText}`,
         type: 'admin',
       });
 
@@ -453,7 +776,9 @@ class GlobalStore {
   // Stats
   getStats() {
     const completedPayments = this.payments.filter(p => p.status === 'completed');
-    const pendingPayments = this.payments.filter(p => p.status === 'pending');
+    const pendingPayments = this.payments.filter(
+      p => p.status === 'pending' || p.status === 'refund_pending'
+    );
     const activeUsers = this.users.filter(u => u.status === 'active');
 
     return {
@@ -464,6 +789,8 @@ class GlobalStore {
       pendingPayments: pendingPayments.length,
       failedPayments: this.payments.filter(p => p.status === 'failed').length,
       refundedPayments: this.payments.filter(p => p.status === 'refunded').length,
+      refundPendingPayments: this.payments.filter(p => p.status === 'refund_pending').length,
+      refundCancelledPayments: this.payments.filter(p => p.status === 'refund_cancelled').length,
       totalUsers: this.users.length,
       activeUsers: activeUsers.length,
       totalInvoices: this.invoices.length,
@@ -483,7 +810,19 @@ export function useStore() {
 
   useEffect(() => {
     const unsubscribe = store.subscribe(() => forceUpdate({}));
-    return unsubscribe;
+
+    const onStorage = (event: StorageEvent) => {
+      if (event.key === 'volosist_store') {
+        store.refreshFromStorage();
+      }
+    };
+
+    window.addEventListener('storage', onStorage);
+
+    return () => {
+      window.removeEventListener('storage', onStorage);
+      unsubscribe();
+    };
   }, []);
 
   return store;

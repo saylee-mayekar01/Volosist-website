@@ -151,8 +151,8 @@ export function ContactPage() {
               </h1>
               <p className="text-lg text-slate-600 font-medium max-w-md leading-relaxed">
                 Let's talk about your next big idea. Use the form to tell us more, or simply drop us an email at{" "}
-                <a href="mailto:atom@volosist.ai" className="text-blue-600 border-b-2 border-blue-600/10 hover:border-blue-600 transition-all font-bold">
-                  atom@volosist.ai
+                <a href="mailto:volosist.ai@gmail.com" className="text-blue-600 border-b-2 border-blue-600/10 hover:border-blue-600 transition-all font-bold">
+                  volosist.ai@gmail.com
                 </a>
               </p>
             </div>
@@ -164,7 +164,7 @@ export function ContactPage() {
                 </div>
                 <div>
                   <div className="text-[10px] font-bold text-slate-400 uppercase tracking-[0.2em] mb-1">Global Support</div>
-                  <div className="text-slate-900 font-bold text-lg">+1 (555) 000-VOLO</div>
+                  <div className="text-slate-900 font-bold text-lg">+91 9769789769</div>
                 </div>
               </div>
 
@@ -174,7 +174,7 @@ export function ContactPage() {
                 </div>
                 <div>
                   <div className="text-[10px] font-bold text-slate-400 uppercase tracking-[0.2em] mb-1">Email Inquiry</div>
-                  <div className="text-slate-900 font-bold text-lg">atom@volosist.ai</div>
+                  <div className="text-slate-900 font-bold text-lg">volosist.ai@gmail.com</div>
                 </div>
               </div>
             </div>

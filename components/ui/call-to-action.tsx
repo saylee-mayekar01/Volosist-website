@@ -6,9 +6,10 @@ import { motion } from "framer-motion";
 
 interface CTAProps {
   onSignUp?: () => void;
+  onBookStrategyCall?: () => void;
 }
 
-function CTA({ onSignUp }: CTAProps) {
+function CTA({ onSignUp, onBookStrategyCall }: CTAProps) {
   return (
     <div className="w-full py-16 lg:py-20 relative">
       <div className="container mx-auto px-6">
@@ -17,7 +18,7 @@ function CTA({ onSignUp }: CTAProps) {
           whileInView={{ opacity: 1, scale: 1 }}
           viewport={{ once: true }}
           transition={{ duration: 0.8, ease: [0.16, 1, 0.3, 1] }}
-          className="flex flex-col text-center bg-white rounded-[2rem] p-12 lg:p-20 gap-8 items-center border border-slate-100 shadow-xl relative overflow-hidden"
+          className="flex flex-col text-center bg-gradient-to-br from-white via-slate-50/80 to-blue-50/40 rounded-[2rem] p-12 lg:p-20 gap-8 items-center border border-slate-200/60 shadow-xl relative overflow-hidden"
         >
           {/* Subtle Background Mesh */}
           <div className="absolute top-0 right-0 w-[400px] h-[400px] bg-blue-500/5 rounded-full blur-[100px] -mr-32 -mt-32" />
@@ -41,6 +42,7 @@ function CTA({ onSignUp }: CTAProps) {
           
           <div className="flex flex-col sm:flex-row gap-4 relative z-10 w-full sm:w-auto mt-2">
             <Button 
+              onClick={onBookStrategyCall}
               variant="outline" 
               className="h-12 px-8 rounded-full border-slate-200 text-slate-900 bg-white font-bold uppercase tracking-widest text-[10px] gap-3 shadow-sm hover:bg-slate-50 transition-all"
             >
